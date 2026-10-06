@@ -323,3 +323,16 @@ svg { width: 22px; height: 22px; flex: none; }
 @keyframes spin { to { transform: rotate(360deg) } }
 @keyframes breathe { 50% { transform: scale(1.04) } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Filtros, borrar avisos y deshacer */
+.chip-filter .count { margin-left: 2px; padding: 1px 7px; border-radius: 99px; background: var(--red); color: #fff; font-size: 11px; }
+.type-ic { width: 34px; height: 34px; flex: none; border-radius: 50%; display: grid; place-items: center; color: #fff; }
+.type-ic svg { width: 18px; height: 18px; }
+.btn-danger { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 15px;
+  border-radius: 18px; background: rgba(255, 69, 84, .14); color: var(--red); font: 700 17px var(--font-display);
+  border: 1px solid rgba(255, 69, 84, .35); }
+.del-btn { flex: none; padding: 8px 14px; border-radius: 99px; background: rgba(255, 69, 84, .14); color: var(--red);
+  font: 700 13px var(--font-display); }
+.del-btn:disabled { opacity: .5; }
+.toast { display: flex; align-items: center; gap: 14px; }
+.toast button { flex: none; padding: 6px 12px; border-radius: 99px; background: var(--brand); color: var(--night); font: 700 14px var(--font-display); }

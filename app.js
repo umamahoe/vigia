@@ -38,7 +38,10 @@
     layer: 'all', showGone: true, mapStyle: 'dark',
     tolls: 'avoid', criterion: 'eco', avoidMotorways: false,
     fuel: 'g95', consumption: 6.5,
+    // Qué se ve en el mapa (lo oculto tampoco avisa)
+    sh_fixed: true, sh_section: true, sh_mobile: true, sh_light: true, sh_police: true, sh_gas: true,
   };
+  const shown = kind => S['sh_' + kind] !== false;
   const S = Object.assign({}, DEFAULTS, store.get('settings', {}));
   const saveS = () => store.set('settings', S);
   let deviceId = store.get('device', null);
@@ -57,7 +60,10 @@
     const com = st.community.map(r => ({ ...r, status: V.radarStatus(r, t) }));
     return st.official.map(r => ({ ...r, status: 'active' })).concat(com);
   };
-  const alertable = () => allRadars().filter(r => r.status !== 'gone');
+  const alertable = () => allRadars().filter(r => r.status !== 'gone' && shown(r.kind));
+  /** Radares de una ruta que te afectan: sobre el camino y en tu sentido de marcha. */
+  const routeRadars = line => V.radarsOnLine(line, alertable())
+    .filter(x => x.radar.dir == null || V.angleDiff(x.radar.dir, V.pointAt(line, x.along).bearing) < 60);
   const findRadar = id => allRadars().find(r => r.id === id);
 
   // ---------- Audio y voz ----------
@@ -240,7 +246,12 @@
   function drawRadars() {
     if (!map.getSource('radars')) return;
     const show = S.layer === 'all' || S.layer === 'radars';
-    const list = show ? allRadars().filter(r => S.showGone || r.status !== 'gone') : [];
+    let src = allRadars();
+    if (st.nav) {
+      const prog = st.nav.progress;
+      src = st.nav.radarsOn.filter(x => x.along > prog - 30).map(x => x.radar);
+    }
+    const list = show ? src.filter(r => shown(r.kind) && (S.showGone || r.status !== 'gone')) : [];
     setSource('radars', { type: 'FeatureCollection', features: list.map(r => ({
       type: 'Feature', geometry: { type: 'Point', coordinates: [r.lon, r.lat] },
       properties: { id: r.id, status: r.status, sort: r.status === 'gone' ? 0 : 1,
@@ -265,7 +276,7 @@
   // ---------- Gasolineras en el mapa ----------
   const stationMarkers = new Map();
   function drawStations() {
-    const show = (S.layer === 'all' || S.layer === 'gas') && map.getZoom() >= 11.5 && !st.nav;
+    const show = (S.layer === 'all' || S.layer === 'gas') && shown('gas') && map.getZoom() >= 11.5 && !st.nav;
     const wanted = new Map();
     if (show && st.stations.length) {
       const b = map.getBounds(), c = map.getCenter();
@@ -552,7 +563,7 @@
       st.community = V.communityFromMessages(msgs);
       st.communityAt = now();
       drawRadars();
-      if (st.nav) st.nav.radarsOn = V.radarsOnLine(st.nav.line, alertable());
+      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
       refreshOpenRadarDetail();
     } catch { /* sin conexión: se reintenta */ }
   }
@@ -574,15 +585,32 @@
     try {
       if (near) {
         await publish({ t: 'v', id: near.id, v: 1, d: deviceId });
+        toast(`${V.KINDS[kind].label} confirmado. ¡Gracias!`);
       } else {
         const id = Math.random().toString(36).slice(2, 11);
         const b = st.heading != null && st.speed > 10 ? Math.round(st.heading) : undefined;
         await publish({ t: 'r', id, k: kind, la: +st.pos.lat.toFixed(6), lo: +st.pos.lon.toFixed(6), b, d: deviceId });
+        toast(`${V.KINDS[kind].label} avisado`, { label: 'Deshacer', fn: () => deleteReport(id) });
       }
-      toast(`${V.KINDS[kind].label} avisado. ¡Gracias!`);
       setTimeout(pollCommunity, 800);
     } catch {
       toast('No se pudo enviar el aviso');
+    }
+  }
+
+  /** Borra un aviso creado desde este móvil (los demás no pueden borrarlo). */
+  async function deleteReport(id) {
+    try {
+      await publish({ t: 'x', id, d: deviceId });
+      st.community = st.community.filter(r => r.id !== id);
+      drawRadars();
+      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
+      toast('Aviso borrado');
+      setTimeout(pollCommunity, 800);
+      return true;
+    } catch {
+      toast('No se pudo borrar. Revisa la conexión.');
+      return false;
     }
   }
 
@@ -646,9 +674,10 @@
   }
 
   // ---------- Rutas ----------
-  async function osrm(from, to, exclude) {
+  async function osrm(from, to, exclude, heading) {
     const url = `${CONFIG.osrm}/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}` +
-      `?overview=full&geometries=geojson&steps=true&alternatives=3${exclude ? '&exclude=' + exclude : ''}`;
+      `?overview=full&geometries=geojson&steps=true&alternatives=3${exclude ? '&exclude=' + exclude : ''}` +
+      (heading != null ? `&bearings=${Math.round(heading) % 360},60;` : '');
     const r = await fetchTimeout(url, 25000);
     const j = await r.json();
     if (j.code !== 'Ok') throw new Error(j.code || 'error');
@@ -656,10 +685,11 @@
   }
 
   let routeSeq = 0;
-  async function computeRoutes(from, to) {
+  async function computeRoutes(from, to, heading = null) {
     const plain = S.avoidMotorways ? 'motorway' : null;
     const noToll = S.avoidMotorways ? 'motorway,toll' : 'toll';
-    const res = await Promise.allSettled([osrm(from, to, plain), osrm(from, to, noToll)]);
+    const res = await Promise.allSettled([osrm(from, to, plain, heading), osrm(from, to, noToll, heading)]);
+    if (heading != null && res.every(x => x.status === 'rejected')) return computeRoutes(from, to, null);
     let raw = [];
     res.forEach(x => { if (x.status === 'fulfilled') raw = raw.concat(x.value); });
     if (res[1].status === 'rejected' && S.avoidMotorways) {
@@ -667,7 +697,6 @@
     }
     if (!raw.length) throw new Error('NoRoute');
     const price = refPrice(from.lat, from.lon);
-    const radars = alertable();
     const list = raw.map(rt => {
       const coords = rt.geometry.coordinates;
       const steps = rt.legs.flatMap(l => l.steps);
@@ -679,7 +708,7 @@
         distance: rt.distance, duration: rt.duration,
         via: rt.legs.map(l => l.summary).filter(Boolean).join(', '),
         liters, cost: liters * price, price,
-        radars: V.radarsOnLine(line, radars),
+        radars: routeRadars(line),
       };
     });
     return V.dedupeRoutes(list);
@@ -713,7 +742,7 @@
       return { ...V.instruction(s), along: p.along, length: s.distance };
     });
     return { route, line: route.line, steps, hint: 0, spoken: {}, off: 0, rerouting: false, lastReroute: 0,
-      arrived: false, progress: 0, radarsOn: V.radarsOnLine(route.line, alertable()) };
+      arrived: false, progress: 0, radarsOn: routeRadars(route.line) };
   }
 
   function startNav() {
@@ -727,7 +756,7 @@
     $('#maneuver').hidden = false; $('#navbar').hidden = false; $('#arrived').hidden = true;
     $('#gasBtn').hidden = true; $('#voiceBtn').hidden = false; renderVoiceBtn();
     $('#cheapPill').hidden = true;
-    drawRoutes(); drawStations();
+    drawRoutes(); drawStations(); drawRadars();
     keepAwake();
     if (st.pos) {
       // Orienta la cámara en el sentido de la ruta desde el primer momento.
@@ -752,6 +781,7 @@
     $('#gasBtn').hidden = false; $('#voiceBtn').hidden = true;
     clearRoute();
     radarStages.clear();
+    drawRadars();
     camZoom = null;
     setFollow(true);
     renderCheap();
@@ -764,9 +794,11 @@
     n.hint = p.idx;
     n.progress = p.along;
 
-    const tol = Math.max(50, st.acc * 1.5);
+    const tol = Math.max(40, st.acc * 1.5);
     n.off = p.dist > tol ? n.off + 1 : 0;
-    if (n.off >= 3 && now() - n.lastReroute > 12000) { reroute(); return; }
+    if (n.off >= 2 && now() - n.lastReroute > 8000) { reroute(); return; }
+    // Los radares ya pasados desaparecen del mapa
+    if (now() - (n.radarDrawAt || 0) > 5000) { n.radarDrawAt = now(); drawRadars(); }
 
     const remaining = Math.max(0, n.line.length - p.along);
     const remTime = n.route.distance > 0 ? n.route.duration * remaining / n.route.distance : 0;
@@ -829,12 +861,13 @@
     setManeuver('reroute', 'Buscando el mejor camino…', 0);
     if (S.voiceGuide) say('Recalculando ruta', true);
     try {
-      st.routes = await computeRoutes(st.pos, st.dest);
+      st.routes = await computeRoutes(st.pos, st.dest, st.speed > 10 ? st.heading : null);
       const best = visibleRoutes()[0];
       if (best && st.nav) {
         st.selectedId = best.id;
         st.nav = prepareNav(best);
-        drawRoutes();
+        drawRoutes(); drawRadars();
+        if (S.voiceGuide) say(`Nueva ruta. ${fmt.dur(best.duration).replace('min', 'minutos').replace(' h ', ' horas ')} hasta el destino.`);
       }
     } catch {
       if (st.nav) { st.nav.rerouting = false; st.nav.off = 0; }
@@ -913,11 +946,16 @@
     { k: 'gas', label: 'Gasolineras', icon: 'i-fuel' },
     { k: 'none', label: 'Solo mapa', icon: 'i-map' },
   ];
+  const TYPES = ['fixed', 'section', 'mobile', 'light', 'police', 'gas'];
   function renderChips() {
-    $('#chips').innerHTML = LAYERS.map(l =>
-      `<button class="chip" role="tab" type="button" data-layer="${l.k}" aria-selected="${S.layer === l.k}">${ic(l.icon)}${l.label}</button>`).join('');
+    const hidden = TYPES.filter(k => !shown(k)).length;
+    $('#chips').innerHTML =
+      `<button class="chip chip-filter" type="button" data-open="layers">${ic('i-sliders')}Filtrar${hidden ? `<span class="count">${hidden}</span>` : ''}</button>` +
+      LAYERS.map(l =>
+        `<button class="chip" role="tab" type="button" data-layer="${l.k}" aria-selected="${S.layer === l.k}">${ic(l.icon)}${l.label}</button>`).join('');
   }
   $('#chips').addEventListener('click', e => {
+    if (e.target.closest('[data-open="layers"]')) { openLayers(); return; }
     const b = e.target.closest('[data-layer]');
     if (!b) return;
     S.layer = b.dataset.layer; saveS();
@@ -974,7 +1012,7 @@
   function renderCheap() {
     cheapAt = now();
     const el = $('#cheapPill');
-    if (st.nav || !st.pos || !st.stations.length) { el.hidden = true; return; }
+    if (st.nav || !st.pos || !st.stations.length || !shown('gas')) { el.hidden = true; return; }
     const near = nearbyStations(st.pos.lat, st.pos.lon, 5000, S.fuel);
     if (!near.length) { el.hidden = true; return; }
     const best = near.reduce((a, b) => b.s.prices[S.fuel] < a.s.prices[S.fuel] ? b : a);
@@ -992,12 +1030,14 @@
   }
 
   let toastTimer = null;
-  function toast(msg) {
+  function toast(msg, action) {
     const t = $('#toast');
-    t.textContent = msg; t.hidden = false;
+    t.innerHTML = `<span>${esc(msg)}</span>` + (action ? `<button type="button">${esc(action.label)}</button>` : '');
+    if (action) t.querySelector('button').onclick = () => { t.hidden = true; action.fn(); };
+    t.hidden = false;
     t.style.animation = 'none'; void t.offsetWidth; t.style.animation = '';
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { t.hidden = true; }, 2400);
+    toastTimer = setTimeout(() => { t.hidden = true; }, action ? 6000 : 2400);
   }
   let noticeTimer = null;
   function notice(msg, ms = 6000) {
@@ -1325,7 +1365,10 @@
       html += `<div class="facts"><div>${ic('i-clock')}Avisado ${relTime(r.created)}</div>
         ${r.lastSeen > r.created ? `<div>${ic('i-check')}Confirmado por última vez ${relTime(r.lastSeen)}</div>` : ''}
         <div>${ic('i-thumb-up')}${r.ups} lo han visto · ${r.downs} dicen que ya no está</div></div>`;
-      if (r.voters.includes(deviceId)) {
+      if (r.reporter === deviceId) {
+        html += `<p class="fine" style="color:var(--teal);margin:0">Este aviso lo creaste tú.</p>
+          <button class="btn-danger" type="button" data-del="${esc(r.id)}">${ic('i-x')}Borrar mi aviso</button>`;
+      } else if (r.voters.includes(deviceId)) {
         html += `<p class="fine" style="color:var(--teal)">Ya has votado este aviso. Gracias.</p>`;
       } else {
         html += `<div class="btns"><button class="btn-grad" type="button" data-vote="1">${ic('i-thumb-up')}Sigue ahí</button>
@@ -1343,7 +1386,10 @@
     const r = findRadar(id);
     if (!r) return;
     openSheet('radar', '', radarDetailHtml(r), id);
-    $('#sheetBody').onclick = e => { const b = e.target.closest('[data-vote]'); if (b) vote(r.id, +b.dataset.vote); };
+    $('#sheetBody').onclick = async e => {
+      const b = e.target.closest('[data-vote]'); if (b) vote(r.id, +b.dataset.vote);
+      const d = e.target.closest('[data-del]'); if (d && await deleteReport(d.dataset.del)) closeSheet();
+    };
   }
   function refreshOpenRadarDetail() {
     if (sheetKind !== 'radar') return;
@@ -1356,8 +1402,75 @@
     const kinds = ['mobile', 'police', 'fixed', 'section', 'light'];
     openSheet('report', '¿Qué hay aquí?', `
       <p class="fine" style="margin:0">Se comparte al momento con los demás conductores que usan tu Vigía. Hazlo como copiloto o con el coche parado.</p>
-      <div class="tiles">${kinds.map(k => `<button class="tile" type="button" data-kind="${k}" style="--c:${V.KINDS[k].color}">${ic(KIND_ICON[k])}${V.KINDS[k].short}</button>`).join('')}</div>`);
-    $('#sheetBody').onclick = e => { const b = e.target.closest('[data-kind]'); if (b) report(b.dataset.kind); };
+      <div class="tiles">${kinds.map(k => `<button class="tile" type="button" data-kind="${k}" style="--c:${V.KINDS[k].color}">${ic(KIND_ICON[k])}${V.KINDS[k].short}</button>`).join('')}</div>
+      ${myReportsHtml()}`);
+    $('#sheetBody').onclick = async e => {
+      const b = e.target.closest('[data-kind]'); if (b) { report(b.dataset.kind); return; }
+      const d = e.target.closest('[data-del]');
+      if (d) { d.disabled = true; if (await deleteReport(d.dataset.del)) openReport(); else d.disabled = false; }
+    };
+  }
+
+  function myReportsHtml() {
+    const mine = allRadars().filter(r => r.source === 'community' && r.reporter === deviceId && r.status !== 'gone')
+      .sort((a, b) => b.created - a.created);
+    if (!mine.length) return '';
+    return `<div class="section-label">Tus avisos</div><div class="list">` + mine.map(r => {
+      const d = st.pos ? ' · a ' + fmt.dist(V.haversine(st.pos.lat, st.pos.lon, r.lat, r.lon)) : '';
+      return `<div class="item"><span class="ic" style="background:${V.KINDS[r.kind].color};color:#fff">${ic(KIND_ICON[r.kind])}</span>
+        <span class="tx"><div class="t1">${V.KINDS[r.kind].label}</div><div class="t2">${relTime(r.created)}${d}</div></span>
+        <button class="del-btn" type="button" data-del="${esc(r.id)}">Borrar</button></div>`;
+    }).join('') + `</div>`;
+  }
+
+  // --- Qué se ve en el mapa ---
+  const PLURAL = { fixed: 'Radares fijos', section: 'Radares de tramo', mobile: 'Radares móviles',
+    light: 'Cámaras de semáforo', police: 'Controles policiales', gas: 'Gasolineras' };
+  function typeRows() {
+    const counts = {};
+    for (const r of allRadars()) if (r.status !== 'gone') counts[r.kind] = (counts[r.kind] || 0) + 1;
+    return TYPES.map(k => {
+      const isGas = k === 'gas';
+      const color = isGas ? 'var(--cheap)' : V.KINDS[k].color;
+      const n = isGas ? st.stations.length : (counts[k] || 0);
+      const sub = isGas ? `${n} con precio` : `${n} en total`;
+      return `<label class="opt"><span class="type-ic" style="background:${color}">${ic(isGas ? 'i-fuel' : KIND_ICON[k])}</span>
+        <span class="lbl">${PLURAL[k]}<small>${sub}</small></span>
+        <span class="switch"><input type="checkbox" id="set-sh_${k}" data-set="sh_${k}" ${shown(k) ? 'checked' : ''}><span></span></span></label>`;
+    }).join('');
+  }
+
+  function openLayers() {
+    openSheet('layers', 'Qué ver en el mapa', `
+      <div class="group">${typeRows()}</div>
+      <p class="fine" style="margin:0">Lo que ocultes tampoco te avisará. Los radares que hayas ocultado se pueden volver a mostrar aquí o en Ajustes.</p>
+      <div class="btns"><button class="btn-soft" type="button" data-all="1">Mostrar todo</button></div>`);
+    const body = $('#sheetBody');
+    body.onchange = onSettingChange;
+    body.onclick = e => {
+      if (!e.target.closest('[data-all]')) return;
+      TYPES.forEach(k => { S['sh_' + k] = true; });
+      saveS(); applyVisibility(); openLayers();
+    };
+  }
+
+  function applyVisibility() {
+    renderChips(); drawRadars(); drawStations(); renderCheap();
+    currentRadar = null; renderBanner();
+    if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
+  }
+
+  function onSettingChange(e) {
+    const k = e.target.dataset.set;
+    if (!k) return;
+    S[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    saveS();
+    if (k.startsWith('sh_')) applyVisibility();
+    if (k === 'mapStyle') map.setStyle(STYLES[S.mapStyle]);
+    if (k === 'layer') { renderChips(); drawRadars(); drawStations(); }
+    if (k === 'showGone') drawRadars();
+    if (k === 'fuel') { drawStations(); renderCheap(); }
+    if (k === 'voiceGuide') renderVoiceBtn();
   }
 
   // --- Ajustes ---
@@ -1391,6 +1504,8 @@
           <button type="button" data-test="voice">Probar voz</button>
         </div>
       </div>
+      <div class="section-label">Qué ver en el mapa</div>
+      <div class="group">${typeRows()}</div>
       <div class="section-label">Mapa</div>
       <div class="group">
         ${sel('layer', 'Mostrar', [['all', 'Todo'], ['radars', 'Solo radares'], ['gas', 'Solo gasolineras'], ['none', 'Solo mapa']])}
@@ -1417,17 +1532,7 @@
       </div>
       <p class="fine">Mapa © OpenStreetMap y CARTO · Rutas: OSRM · Precios: Ministerio para la Transición Ecológica. Avisar de radares con una app es legal en España. Respeta siempre los límites.</p>`);
     const body = $('#sheetBody');
-    body.onchange = e => {
-      const k = e.target.dataset.set;
-      if (!k) return;
-      S[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-      saveS();
-      if (k === 'mapStyle') map.setStyle(STYLES[S.mapStyle]);
-      if (k === 'layer') { renderChips(); drawRadars(); drawStations(); }
-      if (k === 'showGone') drawRadars();
-      if (k === 'fuel') { drawStations(); renderCheap(); }
-      if (k === 'voiceGuide') renderVoiceBtn();
-    };
+    body.onchange = onSettingChange;
     body.onclick = e => {
       const t = e.target.closest('button');
       if (!t) return;

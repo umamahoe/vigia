@@ -284,20 +284,24 @@
 
   /** Reconstruye los avisos de la comunidad a partir de los mensajes (ntfy). */
   function communityFromMessages(msgs) {
-    const map = new Map();
+    const map = new Map(), deleted = new Set();
     const sorted = msgs.slice().sort((a, b) => a.time - b.time);
     for (const m of sorted) {
       let p; try { p = JSON.parse(m.message); } catch { continue; }
       if (!p || typeof p !== 'object') continue;
       const t = m.time * 1000;
-      if (p.t === 'r' && KINDS[p.k] && Number.isFinite(p.la) && Number.isFinite(p.lo) && !map.has(p.id)) {
+      if (p.t === 'r' && KINDS[p.k] && Number.isFinite(p.la) && Number.isFinite(p.lo) && !map.has(p.id) && !deleted.has(p.id)) {
         map.set(p.id, { id: p.id, kind: p.k, lat: p.la, lon: p.lo, dir: Number.isFinite(p.b) ? p.b : null,
-          limit: null, source: 'community', created: t, lastSeen: t,
+          limit: null, source: 'community', created: t, lastSeen: t, reporter: p.d,
           upSet: new Set([p.d]), downSet: new Set() });
       } else if (p.t === 'v' && map.has(p.id)) {
         const r = map.get(p.id);
         if (p.v > 0) { r.upSet.add(p.d); r.downSet.delete(p.d); r.lastSeen = Math.max(r.lastSeen, t); }
         else { r.downSet.add(p.d); r.upSet.delete(p.d); }
+      } else if (p.t === 'x') {
+        // Borrado: solo cuenta si lo pide el mismo dispositivo que creó el aviso.
+        const r = map.get(p.id);
+        if (r && r.reporter === p.d) { map.delete(p.id); deleted.add(p.id); }
       }
     }
     return [...map.values()].map(r => {
