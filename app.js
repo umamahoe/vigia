@@ -609,6 +609,7 @@
       st.stations = V.parsePricesCompact(j);
       st.pricesAt = new Date(j.actualizado);
       st.pricesSource = 'auto';
+      if (st.stations.length < 8000) throw new Error('lista incompleta');
     } catch {
       try {
         const r = await fetchTimeout(CONFIG.ministerio, 45000, { headers: { Accept: 'application/json' } });
