@@ -117,10 +117,36 @@ def build_prices(raw, old, t):
     return rows
 
 
+def fetch_ministerio():
+    """Lista completa de gasolineras. A veces el Ministerio devuelve una lista
+    incompleta: se reintenta y, si sigue corta, se pide provincia a provincia."""
+    best = None
+    for _ in range(3):
+        try:
+            raw = get_json(MINISTERIO, timeout=180)
+            if best is None or len(raw.get("ListaEESSPrecio", [])) > len(best.get("ListaEESSPrecio", [])):
+                best = raw
+            if len(best.get("ListaEESSPrecio", [])) >= 8000:
+                return best
+        except Exception as e:
+            print(f"Ministerio (completo): {e}", file=sys.stderr)
+        time.sleep(10)
+    merged, fecha = {}, (best or {}).get("Fecha", "")
+    for prov in range(1, 53):
+        try:
+            r = get_json(f"{MINISTERIO}FiltroProvincia/{prov:02d}", timeout=90)
+            fecha = r.get("Fecha") or fecha
+            for d in r.get("ListaEESSPrecio", []):
+                merged[str(d.get("IDEESS"))] = d
+        except Exception as e:
+            print(f"Ministerio provincia {prov:02d}: {e}", file=sys.stderr)
+    for d in (best or {}).get("ListaEESSPrecio", []):
+        merged.setdefault(str(d.get("IDEESS")), d)
+    return {"Fecha": fecha, "ListaEESSPrecio": list(merged.values())}
+
+
 def update_prices():
-    raw = get_json(MINISTERIO, timeout=180)
-    if raw.get("ResultadoConsulta", "OK").upper() != "OK" and not raw.get("ListaEESSPrecio"):
-        raise RuntimeError(f"Respuesta del Ministerio: {raw.get('ResultadoConsulta')}")
+    raw = fetch_ministerio()
     rows = build_prices(raw, load(PRECIOS), int(time.time()))
     if len(rows) < 1000:
         raise RuntimeError(f"Solo {len(rows)} gasolineras: no se sobrescribe")
@@ -129,14 +155,12 @@ def update_prices():
 
 
 # ---------------- Radares ----------------
-QUERY = """
-[out:json][timeout:240];
-area["ISO3166-1"="ES"][admin_level=2]->.es;
-node["highway"="speed_camera"](area.es)->.cams;
-rel(bn.cams)["type"="enforcement"]->.enf;
-.cams out body;
-.enf out body;
-"""
+# España por zonas (sur, norte, Canarias, Ceuta y Melilla): una sola consulta
+# para todo el país tarda demasiado y el servidor la corta.
+BOXES = [(35.9, -9.6, 39.9, -3.0), (35.9, -3.0, 40.1, 4.6), (39.9, -9.6, 44.0, -3.0),
+         (40.1, -3.0, 43.9, 3.4), (27.5, -18.3, 29.5, -13.3), (35.1, -5.5, 35.95, -2.8)]
+QUERY = ('[out:json][timeout:180];node["highway"="speed_camera"]({},{},{},{})->.cams;'
+         'rel(bn.cams)["type"="enforcement"]->.enf;.cams out body;.enf out body;')
 
 
 def int_prefix(s):
@@ -187,20 +211,26 @@ def update_radars(force=False):
                 return
         except (KeyError, ValueError):
             pass
-    body = urllib.parse.urlencode({"data": QUERY}).encode()
-    last = None
-    for url in OVERPASS:
-        try:
-            j = get_json(url, data=body, timeout=300)
-            rows = build_radars(j.get("elements", []))
-            if len(rows) < 100:
-                raise RuntimeError(f"Solo {len(rows)} radares")
-            write_lines(RADARES, {"actualizado": now_iso(), "fuente": "OpenStreetMap"}, "r", rows)
-            print(f"Radares: {len(rows)}")
-            return
-        except Exception as e:  # probar el siguiente servidor
-            last = e
-    raise RuntimeError(f"Overpass: {last}")
+    elements, failed = {}, 0
+    for box in BOXES:
+        body = urllib.parse.urlencode({"data": QUERY.format(*box)}).encode()
+        for attempt, url in enumerate(OVERPASS * 2):
+            try:
+                j = get_json(url, data=body, timeout=200)
+                for e in j.get("elements", []):
+                    elements[(e.get("type"), e.get("id"))] = e
+                break
+            except Exception as e:  # probar el otro servidor, o el mismo un poco después
+                print(f"Overpass {box}: {e}", file=sys.stderr)
+                time.sleep(15 * (attempt + 1))
+        else:
+            failed += 1
+        time.sleep(3)
+    rows = build_radars(list(elements.values()))
+    if len(rows) < 100 or failed > 2:
+        raise RuntimeError(f"Overpass: {len(rows)} radares, {failed} zonas sin respuesta")
+    write_lines(RADARES, {"actualizado": now_iso(), "fuente": "OpenStreetMap"}, "r", rows)
+    print(f"Radares: {len(rows)}" + (f" ({failed} zonas pendientes)" if failed else ""))
 
 
 def main():
