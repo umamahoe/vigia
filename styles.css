@@ -150,7 +150,16 @@ svg { width: 22px; height: 22px; flex: none; }
 
 /* ---------- Marcadores ---------- */
 .me { width: 40px; height: 40px; display: grid; place-items: center; }
-.me svg { width: 40px; height: 40px; filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .5)); }
+.me { position: relative; }
+.me svg { position: relative; width: 40px; height: 40px; filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .5)); }
+.me .halo { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border-radius: 50%;
+  background: rgba(0, 224, 198, .12); border: 1.5px solid rgba(0, 224, 198, .4); pointer-events: none; }
+.locating { align-self: center; display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 18px; }
+.locating b { display: block; font: 600 14px var(--font-display); }
+.locating small { display: block; font-size: 12px; color: var(--muted); }
+.spin { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid rgba(0, 224, 198, .25);
+  border-top-color: var(--teal); animation: spin .8s linear infinite; flex: none; }
+#recenterBtn.nudge { background: var(--brand); color: var(--night); box-shadow: 0 6px 20px rgba(0, 224, 198, .45); }
 .station { display: flex; flex-direction: column; align-items: center; cursor: pointer;
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .45)); }
 .station .tag { display: flex; align-items: center; gap: 3px; padding: 3px 7px; border-radius: 99px; color: #0A0F1C;

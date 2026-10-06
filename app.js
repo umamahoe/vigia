@@ -222,11 +222,17 @@
     map.on('mouseenter', l, () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', l, () => { map.getCanvas().style.cursor = ''; });
   }
-  map.on('dragstart', e => { if (e.originalEvent) setFollow(false); });
+  for (const ev of ['dragstart', 'zoomstart', 'rotatestart', 'pitchstart']) {
+    map.on(ev, e => { if (e.originalEvent && st.follow) setFollow(false); });
+  }
+  let moveTimer = null;
   map.on('moveend', () => {
-    drawStations();
-    const c = map.getCenter();
-    store.set('view', { c: [c.lng, c.lat], z: map.getZoom() });
+    clearTimeout(moveTimer);
+    moveTimer = setTimeout(() => {
+      drawStations();
+      const c = map.getCenter();
+      store.set('view', { c: [c.lng, c.lat], z: map.getZoom() });
+    }, 400);
   });
 
   function setSource(id, data) { const s = map.getSource(id); if (s) s.setData(data); }
@@ -245,10 +251,11 @@
   // Marcador de mi posición
   const meEl = document.createElement('div');
   meEl.className = 'me';
-  meEl.innerHTML = `<svg viewBox="0 0 40 40"><defs><linearGradient id="g-me" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00E0C6"/><stop offset="1" stop-color="#2F6EFF"/></linearGradient></defs>
+  meEl.innerHTML = `<div class="halo"></div><svg viewBox="0 0 40 40"><defs><linearGradient id="g-me" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00E0C6"/><stop offset="1" stop-color="#2F6EFF"/></linearGradient></defs>
     <circle cx="20" cy="20" r="17" fill="rgba(0,224,198,.18)"/><path d="M20 6 30 31 20 26 10 31z" fill="url(#g-me)" stroke="#fff" stroke-width="2.4" stroke-linejoin="round"/></svg>`;
   const meMarker = new maplibregl.Marker({ element: meEl, rotationAlignment: 'map', pitchAlignment: 'map' });
   let meAdded = false;
+  const haloEl = meEl.querySelector('.halo');
 
   const destEl = document.createElement('div');
   destEl.className = 'dest-pin';
@@ -332,38 +339,58 @@
   }
 
   // ---------- GPS ----------
-  let prevFix = null;
+  // Cada lectura del GPS se guarda en `fix`. Un bucle de animación mueve la flecha
+  // suavemente entre lecturas (y la pega a la carretera durante la ruta) y la
+  // cámara la sigue, como en Google Maps.
+  let fix = null;
+  let gotGoodFix = false, centeredOnce = false;
+
+  const locEl = document.createElement('div');
+  locEl.id = 'locating';
+  locEl.className = 'locating glass';
+  locEl.hidden = true;
+  locEl.innerHTML = '<span class="spin"></span><span><b>Buscando tu ubicación…</b><small id="locatingAcc">Sal al exterior para más precisión</small></span>';
+  document.querySelector('.hud-top').appendChild(locEl);
+
   function onPosition(p) {
     const c = p.coords;
-    const lat = c.latitude, lon = c.longitude, t = p.timestamp || now();
-    if (c.accuracy > 120 && st.pos) return;
+    const lat = c.latitude, lon = c.longitude, t = now();
+    const acc = c.accuracy || 50;
+    // Ignora lecturas mucho peores que una buena reciente (saltos por wifi o antenas).
+    if (fix && acc > 80 && fix.acc < 40 && t - fix.t < 10000) return;
     let speed = c.speed != null && c.speed >= 0 ? c.speed : null;
     let heading = c.heading != null && !Number.isNaN(c.heading) && c.heading >= 0 ? c.heading : null;
-    if (prevFix) {
-      const d = V.haversine(prevFix.lat, prevFix.lon, lat, lon), dt = (t - prevFix.t) / 1000;
-      if (speed == null && dt > 0.5) speed = d / dt;
-      if (heading == null && d > 8) heading = V.bearing(prevFix.lat, prevFix.lon, lat, lon);
+    if (fix) {
+      const d = V.haversine(fix.lat, fix.lon, lat, lon), dt = (t - fix.t) / 1000;
+      // Algunos GPS dan velocidad 0 o nula aunque te muevas: la calculamos con la distancia recorrida.
+      if (dt > 0.4 && (speed == null || (speed < 0.5 && d / dt > 2 && d > acc * 0.5))) speed = d / dt;
+      if (heading == null && d > Math.max(6, acc * 0.5)) heading = V.bearing(fix.lat, fix.lon, lat, lon);
     }
-    if (!prevFix || V.haversine(prevFix.lat, prevFix.lon, lat, lon) > 5) prevFix = { lat, lon, t };
+    fix = { lat, lon, acc, t, speed: speed || 0 };
     st.pos = { lat, lon };
-    st.acc = c.accuracy || 30;
+    st.acc = acc;
     st.speed = Math.max(0, (speed || 0) * 3.6);
-    if (heading != null && st.speed > 4) st.heading = heading;
-    else if (st.compass != null && st.speed < 4) st.heading = st.compass;
+    if (heading != null && st.speed > 5) st.heading = heading;
+    else if (st.compass != null && st.speed <= 5) st.heading = st.compass;
     st.lastFix = t;
 
-    meMarker.setLngLat([lon, lat]).setRotation(st.heading || 0);
-    if (!meAdded) { meMarker.addTo(map); meAdded = true; }
-
+    if (!meAdded) { disp = { lat, lon }; meMarker.setLngLat([lon, lat]).addTo(map); meAdded = true; }
     if (st.firstFix) {
       st.firstFix = false;
-      map.jumpTo({ center: [lon, lat], zoom: 14 });
       if (!st.official.length) loadOverpassAround(lat, lon);
       pollCommunity();
       setTimeout(renderCheap, 50);
     }
+    if (!gotGoodFix && acc <= 65) {
+      gotGoodFix = true;
+      locEl.hidden = true;
+      if (st.follow && !st.nav) flyToMe(16.5);
+    } else if (!gotGoodFix) {
+      locEl.hidden = false;
+      $('#locatingAcc').textContent = `Precisión actual: ±${Math.round(acc)} m`;
+      if (st.follow && !st.nav && !centeredOnce) { centeredOnce = true; flyToMe(14); }
+    }
     if (st.nav) updateNav(lat, lon);
-    followCamera();
     evaluateRadars(lat, lon);
     renderSpeed();
     throttledCheap();
@@ -371,22 +398,27 @@
 
   function onPositionError(e) {
     if (e.code === 1) {
-      notice('Sin permiso de ubicación. Actívalo en Ajustes del iPhone → Privacidad y seguridad → Localización → Safari (o Vigía) → "Mientras se usa".', 12000);
-    } else {
-      notice('Buscando señal GPS…', 4000);
+      locEl.hidden = true;
+      notice('Sin permiso de ubicación. Actívalo en Ajustes del iPhone → Privacidad y seguridad → Localización → Safari (o Vigía) → "Mientras se usa" y "Ubicación exacta".', 15000);
+    } else if (!fix) {
+      locEl.hidden = false;
     }
   }
 
   function startGPS() {
     if (!('geolocation' in navigator)) { notice('Este navegador no tiene GPS.'); return; }
-    navigator.geolocation.watchPosition(onPosition, onPositionError, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+    locEl.hidden = false;
+    const opts = { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 };
+    navigator.geolocation.getCurrentPosition(onPosition, () => {}, opts);
+    navigator.geolocation.watchPosition(onPosition, onPositionError, opts);
   }
 
   function startCompass() {
     const handler = e => {
       const h = e.webkitCompassHeading != null ? e.webkitCompassHeading : (e.absolute && e.alpha != null ? 360 - e.alpha : null);
-      if (h != null) st.compass = h;
-      if (st.speed < 4 && st.pos && h != null) { st.heading = h; meMarker.setRotation(h); }
+      if (h == null) return;
+      st.compass = h;
+      if (st.speed <= 5) st.heading = h;
     };
     try {
       if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -398,25 +430,84 @@
     } catch { /* sin brújula */ }
   }
 
-  let lastCam = 0;
-  function followCamera() {
-    if (!st.follow || !st.pos) return;
-    const t = now();
-    if (t - lastCam < 700) return;
-    lastCam = t;
-    if (st.nav) {
-      const zoom = st.speed > 100 ? 15 : st.speed > 70 ? 15.6 : st.speed > 40 ? 16.3 : 17;
-      map.easeTo({ center: [st.pos.lon, st.pos.lat], bearing: st.heading ?? map.getBearing(), pitch: 55, zoom,
-        offset: [0, Math.round(innerHeight * 0.2)], duration: 900, easing: x => x });
-    } else {
-      map.easeTo({ center: [st.pos.lon, st.pos.lat], duration: 800 });
+  // --- Animación de la flecha y de la cámara ---
+  let disp = null, dispBearing = 0, camZoom = null, flying = false, lastFrame = 0;
+  const lerp = (a, b, k) => a + (b - a) * k;
+  const lerpAngle = (a, b, k) => { const d = ((b - a + 540) % 360) - 180; return (a + d * k + 360) % 360; };
+  const navPadding = () => ({ top: Math.round(innerHeight * 0.42), bottom: 0, left: 0, right: 0 });
+  const noPadding = { top: 0, bottom: 0, left: 0, right: 0 };
+
+  /** Dónde debería estar la flecha ahora mismo (avanza según velocidad entre lecturas). */
+  function predicted() {
+    const dt = Math.min(1.5, (now() - fix.t) / 1000), v = fix.speed;
+    if (st.nav && !st.nav.rerouting) {
+      const p = V.project(st.nav.line, fix.lat, fix.lon, st.nav.hint);
+      if (p.dist < Math.max(40, fix.acc)) {
+        const pt = V.pointAt(st.nav.line, p.along + (v > 1 ? v * dt : 0));
+        return { lat: pt.lat, lon: pt.lon, bearing: pt.bearing };
+      }
     }
+    let lat = fix.lat, lon = fix.lon;
+    if (v > 1.5 && st.heading != null) {
+      const d = v * dt, r = st.heading * Math.PI / 180;
+      lat += d * Math.cos(r) / 110540;
+      lon += d * Math.sin(r) / (111320 * Math.cos(lat * Math.PI / 180));
+    }
+    return { lat, lon, bearing: st.heading };
+  }
+
+  function updateHalo() {
+    const show = !st.nav && st.acc > 12;
+    haloEl.style.display = show ? '' : 'none';
+    if (!show) return;
+    const mpp = 40075016.686 * Math.cos(disp.lat * Math.PI / 180) / (512 * Math.pow(2, map.getZoom()));
+    const px = Math.min(600, Math.max(44, 2 * st.acc / mpp));
+    haloEl.style.width = haloEl.style.height = px + 'px';
+  }
+
+  function frame(ts) {
+    requestAnimationFrame(frame);
+    if (!fix || document.hidden) { lastFrame = ts; return; }
+    const dtf = Math.min(0.1, Math.max(0.001, (ts - lastFrame) / 1000));
+    lastFrame = ts;
+    const target = predicted();
+    if (!disp) disp = { lat: target.lat, lon: target.lon };
+    const jump = V.haversine(disp.lat, disp.lon, target.lat, target.lon);
+    const k = jump > 250 ? 1 : 1 - Math.pow(0.003, dtf);
+    disp.lat = lerp(disp.lat, target.lat, k);
+    disp.lon = lerp(disp.lon, target.lon, k);
+    if (target.bearing != null) dispBearing = lerpAngle(dispBearing, target.bearing, 1 - Math.pow(0.02, dtf));
+    meMarker.setLngLat([disp.lon, disp.lat]).setRotation(dispBearing);
+    updateHalo();
+    if (!st.follow || flying) return;
+    if (st.nav) {
+      const z = st.speed > 100 ? 15.2 : st.speed > 70 ? 15.8 : st.speed > 40 ? 16.4 : 17.2;
+      camZoom = camZoom == null ? map.getZoom() : lerp(camZoom, z, 1 - Math.pow(0.4, dtf));
+      map.jumpTo({ center: [disp.lon, disp.lat], bearing: dispBearing, pitch: 60, zoom: camZoom, padding: navPadding() });
+    } else {
+      map.jumpTo({ center: [disp.lon, disp.lat], padding: noPadding });
+    }
+  }
+  requestAnimationFrame(frame);
+
+  /** Vuela hasta la flecha (al empezar, al iniciar la ruta o al pulsar "centrar"). */
+  function flyToMe(zoom) {
+    const p = disp || fix;
+    if (!p) return;
+    flying = true;
+    const nav = !!st.nav;
+    camZoom = nav ? 17.2 : (zoom || Math.max(map.getZoom(), 16));
+    map.flyTo({ center: [p.lon, p.lat], zoom: camZoom, pitch: nav ? 60 : 0,
+      bearing: nav ? dispBearing : 0, padding: nav ? navPadding() : noPadding, duration: 1300, essential: true });
+    clearTimeout(flyToMe.t);
+    flyToMe.t = setTimeout(() => { flying = false; }, 1400);
   }
 
   function setFollow(on) {
     st.follow = on;
     $('#recenterBtn').classList.toggle('on', on);
-    if (on) { lastCam = 0; followCamera(); }
+    $('#recenterBtn').classList.toggle('nudge', !on && !!st.nav);
+    if (on) flyToMe();
   }
 
   // ---------- Datos: radares ----------
@@ -637,6 +728,11 @@
     $('#cheapPill').hidden = true;
     drawRoutes(); drawStations();
     keepAwake();
+    if (st.pos) {
+      // Orienta la cámara en el sentido de la ruta desde el primer momento.
+      const p0 = V.project(st.nav.line, st.pos.lat, st.pos.lon);
+      dispBearing = V.pointAt(st.nav.line, p0.along + 10).bearing;
+    }
     setFollow(true);
     if (S.voiceGuide) {
       const n = r.radars.length;
@@ -655,7 +751,7 @@
     $('#gasBtn').hidden = false; $('#voiceBtn').hidden = true;
     clearRoute();
     radarStages.clear();
-    map.easeTo({ pitch: 0, bearing: 0, zoom: 14, duration: 800 });
+    camZoom = null;
     setFollow(true);
     renderCheap();
   }
@@ -1351,8 +1447,8 @@
   $('#gasBtn').addEventListener('click', openGas);
   $('#reportBtn').addEventListener('click', openReport);
   $('#recenterBtn').addEventListener('click', () => {
+    if (!fix) { toast('Todavía buscando tu ubicación…'); return; }
     setFollow(true);
-    if (!st.nav) map.easeTo({ zoom: Math.max(map.getZoom(), 14), pitch: 0, bearing: 0, duration: 600 });
   });
   $('#cheapPill').addEventListener('click', e => openStation(e.currentTarget.dataset.id));
   $('#voiceBtn').addEventListener('click', () => {

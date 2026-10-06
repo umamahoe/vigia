@@ -69,6 +69,18 @@
   }
 
   /** Radares a menos de `tol` m de la ruta, con su distancia desde el inicio. */
+  /** Punto de la línea a `along` metros del inicio, con el rumbo del tramo. */
+  function pointAt(line, along) {
+    const cum = line.cum, c = line.coords, n = c.length;
+    if (n < 2) return { lon: c[0][0], lat: c[0][1], bearing: 0 };
+    along = Math.max(0, Math.min(line.length, along));
+    let lo = 0, hi = n - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (cum[mid] <= along) lo = mid; else hi = mid; }
+    const seg = cum[hi] - cum[lo], t = seg > 0 ? (along - cum[lo]) / seg : 0;
+    const a = c[lo], b = c[hi];
+    return { lon: a[0] + (b[0] - a[0]) * t, lat: a[1] + (b[1] - a[1]) * t, bearing: bearing(a[1], a[0], b[1], b[0]) };
+  }
+
   function radarsOnLine(line, radars, tol = 45) {
     const [a, b, c, d] = line.bbox, m = 0.02;
     const out = [];
@@ -294,7 +306,7 @@
     });
   }
 
-  root.VL = { haversine, bearing, angleDiff, prepareLine, project, radarsOnLine, fuelLiters, sortRoutes,
+  root.VL = { haversine, bearing, angleDiff, prepareLine, project, pointAt, radarsOnLine, fuelLiters, sortRoutes,
     dedupeRoutes, instruction, fmt, spokenDistance, FUELS, parsePricesCompact, parseMinisterio, brandName,
     KINDS, LIFETIME, parseRadarsCompact, radarStatus, communityFromMessages };
 })(typeof window !== 'undefined' ? window : globalThis);
