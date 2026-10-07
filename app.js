@@ -9,7 +9,7 @@
     ntfy: 'https://ntfy.sh',
     osrm: 'https://router.project-osrm.org',
     photon: 'https://photon.komoot.io',
-    overpass: 'https://overpass-api.de/api/interpreter',
+    overpassList: ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'],
     ministerio: 'https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/',
   };
 
@@ -232,9 +232,12 @@
     map.on(ev, e => { if (e.originalEvent && st.follow) setFollow(false); });
   }
   let moveTimer = null;
+  // Ojo: mientras la cámara sigue a la flecha, MapLibre lanza 'moveend' en cada fotograma.
+  // Por eso se agrupa (como mucho una vez cada 400 ms) en lugar de esperar a que pare.
   map.on('moveend', () => {
-    clearTimeout(moveTimer);
+    if (moveTimer) return;
     moveTimer = setTimeout(() => {
+      moveTimer = null;
       drawStations();
       const c = map.getCenter();
       store.set('view', { c: [c.lng, c.lat], z: map.getZoom() });
@@ -274,42 +277,102 @@
   const destMarker = new maplibregl.Marker({ element: destEl, anchor: 'bottom' });
 
   // ---------- Gasolineras en el mapa ----------
-  const stationMarkers = new Map();
+  // Todas las gasolineras de la zona visible como capas del mapa (rápido aunque haya miles):
+  // de lejos, puntos de color; de cerca, etiqueta con el precio. Verde = barata, rojo = cara,
+  // gris = no vende el combustible elegido.
+  const BAND_COLOR = ['#34D873', '#FFC83A', '#FF6B4D', '#8A93A8'];
+  function priceImage(id) {
+    const [, band, price, trend] = id.split('|');
+    const px = 2, fs = 12, h = 22, tipH = 6;
+    const c = document.createElement('canvas'), ctx = c.getContext('2d');
+    ctx.font = `800 ${fs}px -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif`;
+    const tw = Math.ceil(ctx.measureText(price).width);
+    const w = 8 + 12 + 3 + tw + (trend ? 11 : 0) + 8;
+    c.width = w * px; c.height = (h + tipH) * px;
+    ctx.scale(px, px);
+    const color = BAND_COLOR[band] || BAND_COLOR[1];
+    ctx.fillStyle = color; ctx.strokeStyle = 'rgba(10,15,28,.55)'; ctx.lineWidth = 1;
+    const r = (h - 1) / 2;
+    ctx.beginPath();
+    ctx.moveTo(0.5 + r, 0.5); ctx.lineTo(w - 0.5 - r, 0.5);
+    ctx.arc(w - 0.5 - r, 0.5 + r, r, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(0.5 + r, h - 0.5);
+    ctx.arc(0.5 + r, 0.5 + r, r, Math.PI / 2, Math.PI * 1.5);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(w / 2 - 5, h - 1); ctx.lineTo(w / 2, h + tipH - 0.5); ctx.lineTo(w / 2 + 5, h - 1); ctx.fill();
+    ctx.fillStyle = '#0A0F1C';
+    ctx.save(); ctx.translate(8, 5); ctx.scale(0.5, 0.5);   // surtidor (24×24 → 12×12)
+    ctx.fill(new Path2D('M4 3h9a1 1 0 0 1 1 1v16h1V12a1 1 0 0 1 1-1h1.5A2.5 2.5 0 0 1 20 13.5V18a1 1 0 0 0 2 0V8.4l-2.7-2.7 1.4-1.4L23 6.6V18a3 3 0 0 1-6 0v-5h-1v8H3V4a1 1 0 0 1 1-1zm2 2v5h5V5z'));
+    ctx.restore();
+    ctx.font = `800 ${fs}px -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(price, 23, h / 2 + 0.5);
+    if (trend) {
+      const x = 23 + tw + 6, y = h / 2;
+      ctx.beginPath();
+      if (trend === 'up') { ctx.moveTo(x - 4, y + 3); ctx.lineTo(x, y - 3); ctx.lineTo(x + 4, y + 3); }
+      else { ctx.moveTo(x - 4, y - 3); ctx.lineTo(x, y + 3); ctx.lineTo(x + 4, y - 3); }
+      ctx.fill();
+    }
+    const data = ctx.getImageData(0, 0, c.width, c.height);
+    return { width: c.width, height: c.height, data: new Uint8Array(data.data.buffer) };
+  }
+  map.on('styleimagemissing', e => {
+    if (e.id.startsWith('pz|') && !map.hasImage(e.id)) map.addImage(e.id, priceImage(e.id), { pixelRatio: 2 });
+  });
+
+  function addStationLayers() {
+    if (map.getSource('stations')) return;
+    map.addSource('stations', { type: 'geojson', data: EMPTY });
+    drawStations.sig = null;
+    const beforeRadars = map.getLayer('radars') ? 'radars' : undefined;
+    map.addLayer({ id: 'stations-dot', type: 'circle', source: 'stations', minzoom: 8,
+      paint: { 'circle-color': ['get', 'color'],
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 2.5, 11, 4.5, 14, 6],
+        'circle-stroke-color': '#0A0F1C', 'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 8, 0.5, 12, 1.5],
+        'circle-opacity': ['case', ['get', 'has'], 1, 0.7] } }, beforeRadars);
+    map.addLayer({ id: 'stations-price', type: 'symbol', source: 'stations', minzoom: 11.5,
+      filter: ['get', 'has'],
+      layout: { 'icon-image': ['get', 'icon'], 'icon-anchor': 'bottom', 'icon-allow-overlap': false,
+        'icon-padding': 1, 'symbol-sort-key': ['get', 'sort'] } }, beforeRadars);
+    for (const l of ['stations-dot', 'stations-price']) {
+      map.on('click', l, e => {
+        const f = e.features && e.features[0];
+        if (f && !(map.queryRenderedFeatures(e.point, { layers: ['radars'] }) || []).length) openStation(f.properties.id);
+      });
+      map.on('mouseenter', l, () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', l, () => { map.getCanvas().style.cursor = ''; });
+    }
+    drawStations();
+  }
+  map.on('style.load', addStationLayers);
+
   function drawStations() {
-    const show = (S.layer === 'all' || S.layer === 'gas') && shown('gas') && map.getZoom() >= 11.5 && !st.nav;
-    const wanted = new Map();
-    if (show && st.stations.length) {
-      const b = map.getBounds(), c = map.getCenter();
-      const inView = st.stations.filter(s => s.prices[S.fuel] != null && b.contains([s.lon, s.lat]))
-        .map(s => ({ s, d: V.haversine(c.lat, c.lng, s.lat, s.lon) }))
-        .sort((a, b) => a.d - b.d).slice(0, 70).map(x => x.s);
-      const ps = inView.map(s => s.prices[S.fuel]).sort((a, b) => a - b);
-      const lo = ps[Math.floor(ps.length / 3)], hi = ps[Math.floor(ps.length * 2 / 3)];
-      for (const s of inView) {
-        const p = s.prices[S.fuel];
-        const band = ps.length < 3 ? 1 : p <= lo ? 0 : p >= hi ? 2 : 1;
-        wanted.set(s.id, { s, band });
-      }
+    if (!map.getSource('stations')) return;
+    const show = (S.layer === 'all' || S.layer === 'gas') && shown('gas') && !st.nav && map.getZoom() >= 7.5;
+    if (!show || !st.stations.length) {
+      if (drawStations.sig !== '') { drawStations.sig = ''; setSource('stations', EMPTY); }
+      return;
     }
-    for (const [id, m] of stationMarkers) {
-      if (!wanted.has(id)) { m.remove(); stationMarkers.delete(id); }
-    }
-    for (const [id, { s, band }] of wanted) {
-      const color = ['#34D873', '#FFC83A', '#FF6B4D'][band];
-      const tr = trendOf(s, S.fuel);
-      const html = `<div class="tag">${ic('i-fuel')}${fmt.price(s.prices[S.fuel])}${tr ? ic(tr === 'up' ? 'i-up' : 'i-down') : ''}</div><div class="tip"></div>`;
-      let m = stationMarkers.get(id);
-      if (!m) {
-        const el = document.createElement('div');
-        el.className = 'station';
-        el.addEventListener('click', ev => { ev.stopPropagation(); openStation(id); });
-        m = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([s.lon, s.lat]).addTo(map);
-        stationMarkers.set(id, m);
-      }
-      const el = m.getElement();
-      el.style.setProperty('--c', color);
-      if (el.dataset.h !== html) { el.innerHTML = html; el.dataset.h = html; }
-    }
+    const b = map.getBounds();
+    const padLat = (b.getNorth() - b.getSouth()) * 0.25, padLon = (b.getEast() - b.getWest()) * 0.25;
+    const s0 = b.getSouth() - padLat, n0 = b.getNorth() + padLat, w0 = b.getWest() - padLon, e0 = b.getEast() + padLon;
+    const inView = st.stations.filter(s => s.lat > s0 && s.lat < n0 && s.lon > w0 && s.lon < e0);
+    const ps = inView.map(s => s.prices[S.fuel]).filter(p => p != null).sort((a, c) => a - c);
+    const lo = ps[Math.floor(ps.length / 3)], hi = ps[Math.floor(ps.length * 2 / 3)];
+    const features = inView.map(s => {
+      const p = s.prices[S.fuel], has = p != null;
+      const band = !has ? 3 : ps.length < 3 || lo === hi ? 1 : p <= lo ? 0 : p >= hi ? 2 : 1;
+      const tr = has ? trendOf(s, S.fuel) : null;
+      return { type: 'Feature', geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+        properties: { id: s.id, has, color: BAND_COLOR[band], sort: has ? Math.round(p * 1000) : 99999,
+          icon: has ? `pz|${band}|${fmt.price(p)}|${tr || ''}` : '' } };
+    });
+    // Mientras sigues a la flecha esto se llama a menudo: solo se repinta si algo cambió.
+    const sig = S.fuel + features.length + ':' + features.map(f => f.properties.id + f.properties.icon + f.properties.color).join(',');
+    if (sig === drawStations.sig) return;
+    drawStations.sig = sig;
+    setSource('stations', { type: 'FeatureCollection', features });
   }
 
   function trendOf(s, f) {
@@ -388,7 +451,7 @@
     if (!meAdded) { disp = { lat, lon }; meMarker.setLngLat([lon, lat]).addTo(map); meAdded = true; }
     if (st.firstFix) {
       st.firstFix = false;
-      if (!st.official.length) loadOverpassAround(lat, lon);
+      setTimeout(() => loadOverpassAround(lat, lon), 4000);
       pollCommunity();
       setTimeout(renderCheap, 50);
       const tryLive = () => (loadingPrices ? setTimeout(tryLive, 1500) : loadPrices(true));
@@ -498,7 +561,10 @@
       camZoom = camZoom == null ? map.getZoom() : lerp(camZoom, z, 1 - Math.pow(0.4, dtf));
       map.jumpTo({ center: [disp.lon, disp.lat], bearing: dispBearing, pitch: 60, zoom: camZoom, padding: navPadding() });
     } else {
-      map.jumpTo({ center: [disp.lon, disp.lat], padding: noPadding });
+      const c = map.getCenter();
+      if (Math.abs(c.lat - disp.lat) > 1e-7 || Math.abs(c.lng - disp.lon) > 1e-7) {
+        map.jumpTo({ center: [disp.lon, disp.lat], padding: noPadding });
+      }
     }
   }
   requestAnimationFrame(frame);
@@ -529,30 +595,56 @@
       const r = await fetchTimeout('data/radares.json?v=' + Math.floor(now() / 3600e3), 20000);
       if (!r.ok) throw new Error(r.status);
       const j = await r.json();
-      st.official = V.parseRadarsCompact(j);
-      st.radarSource = `OpenStreetMap · ${new Date(j.actualizado).toLocaleDateString('es-ES')}`;
+      const fileRadars = V.parseRadarsCompact(j);
+      const extra = st.official.filter(r => r.id.startsWith('osm-'));
+      st.official = fileRadars;
+      addNearbyOsm(extra);
+      st.radarSource = `${j.fuente || 'OpenStreetMap'} · ${new Date(j.actualizado).toLocaleDateString('es-ES')}`;
       drawRadars();
+      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
     } catch {
       if (st.pos) loadOverpassAround(st.pos.lat, st.pos.lon);
     }
   }
 
-  async function loadOverpassAround(lat, lon) {
-    if (st.official.length) return;
-    const q = `[out:json][timeout:25];node["highway"="speed_camera"](around:80000,${lat},${lon});out body;`;
-    try {
-      const r = await fetchTimeout(`${CONFIG.overpass}?data=${encodeURIComponent(q)}`, 30000);
-      const j = await r.json();
-      st.official = (j.elements || []).map(e => ({
-        id: 'osm-' + e.id, lat: e.lat, lon: e.lon, kind: 'fixed', source: 'official',
-        limit: parseInt(e.tags && e.tags.maxspeed, 10) || null,
-        dir: Number.isFinite(parseFloat(e.tags && e.tags.direction)) ? parseFloat(e.tags.direction) : null,
-      }));
-      st.radarSource = 'OpenStreetMap (80 km a tu alrededor)';
-      drawRadars();
-    } catch {
-      notice('No se pudieron cargar los radares fijos. Revisa la conexión.');
+  /** Añade radares de OpenStreetMap que no estén ya en la lista oficial (a menos de 150 m). */
+  function addNearbyOsm(list) {
+    let added = 0;
+    for (const r of list) {
+      const dup = st.official.some(o => Math.abs(o.lat - r.lat) < 0.003 && Math.abs(o.lon - r.lon) < 0.004 &&
+        V.haversine(o.lat, o.lon, r.lat, r.lon) < 150);
+      if (!dup) { st.official.push(r); added++; }
     }
+    return added;
+  }
+
+  // Radares recién añadidos a OpenStreetMap a tu alrededor (complementa el archivo oficial).
+  const osmDone = [];
+  async function loadOverpassAround(lat, lon) {
+    if (osmDone.some(p => V.haversine(p.lat, p.lon, lat, lon) < 25000)) return;
+    osmDone.push({ lat, lon });
+    const q = `[out:json][timeout:25];node["highway"="speed_camera"](around:50000,${lat},${lon});out body;`;
+    for (const base of CONFIG.overpassList) {
+      try {
+        const r = await fetchTimeout(`${base}?data=${encodeURIComponent(q)}`, 30000);
+        if (!r.ok) continue;
+        const j = await r.json();
+        const list = (j.elements || []).map(e => ({
+          id: 'osm-' + e.id, lat: e.lat, lon: e.lon, kind: 'fixed', source: 'official',
+          limit: parseInt(e.tags && e.tags.maxspeed, 10) || null,
+          dir: Number.isFinite(parseFloat(e.tags && e.tags.direction)) ? parseFloat(e.tags.direction) : null,
+        }));
+        const empty = !st.official.length;
+        if (addNearbyOsm(list)) {
+          if (empty) st.radarSource = 'OpenStreetMap (50 km a tu alrededor)';
+          drawRadars();
+          if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
+        }
+        return;
+      } catch { /* probar el siguiente servidor */ }
+    }
+    osmDone.pop();
+    if (!st.official.length) notice('No se pudieron cargar los radares fijos. Revisa la conexión.');
   }
 
   // ---------- Datos: avisos de la comunidad (ntfy) ----------
@@ -1444,7 +1536,8 @@
     } else {
       html += `<div class="facts"><div>${ic('i-check')}Siempre se avisa a 1 km y a 500 m.</div>
         ${r.dir != null ? `<div>${ic('i-locate')}Controla el sentido ${Math.round(r.dir)}°</div>` : ''}
-        <div>${ic('i-map')}Fuente: OpenStreetMap</div></div>`;
+        ${r.road ? `<div>${ic('i-pin')}Carretera ${esc(r.road)}</div>` : ''}
+        <div>${ic('i-map')}Fuente: ${({ dgt: 'DGT (lista oficial)', sct: 'Servei Català de Trànsit (lista oficial)' })[r.origin] || 'OpenStreetMap'}</div></div>`;
     }
     return html;
   }

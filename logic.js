@@ -283,6 +283,7 @@
     return (json.r || []).map((r, i) => ({
       id: `of-${i}-${r[0].toFixed(4)}`, lat: r[0], lon: r[1], kind: code[r[2]] || 'fixed',
       limit: r[3] || null, dir: r[4] ?? null, source: 'official',
+      road: r[5] || '', origin: r[6] || 'osm',
     }));
   }
 
