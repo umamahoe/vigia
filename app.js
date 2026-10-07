@@ -391,6 +391,8 @@
       if (!st.official.length) loadOverpassAround(lat, lon);
       pollCommunity();
       setTimeout(renderCheap, 50);
+      const tryLive = () => (loadingPrices ? setTimeout(tryLive, 1500) : loadPrices(true));
+      tryLive();
     }
     if (!gotGoodFix && acc <= 65) {
       gotGoodFix = true;
@@ -624,36 +626,95 @@
   }
 
   // ---------- Datos: precios ----------
+  /** Mezcla precios nuevos con los que ya teníamos: si un precio cambia, guarda el anterior (flecha ↑/↓). */
+  function mergeStations(fresh, replaceAll) {
+    const old = new Map(st.stations.map(s => [s.id, s]));
+    for (const s of fresh) {
+      const o = old.get(s.id);
+      if (!o) continue;
+      s.prev = Object.assign({}, o.prev, s.prev);
+      for (const k in s.prices) {
+        if (o.prices[k] != null && Math.abs(o.prices[k] - s.prices[k]) > 0.0005) { s.prev[k] = o.prices[k]; s.changedAt = now(); }
+      }
+      if (!s.prov) s.prov = o.prov;
+    }
+    if (replaceAll) { st.stations = fresh; return; }
+    const byId = new Map(fresh.map(s => [s.id, s]));
+    st.stations = st.stations.map(s => byId.get(s.id) || s);
+    const known = new Set(st.stations.map(s => s.id));
+    for (const s of fresh) if (!known.has(s.id)) st.stations.push(s);
+  }
+
+  /** Provincia (código del Ministerio) de la gasolinera más cercana a un punto. */
+  function provinceAt(lat, lon) {
+    let best = null, bd = Infinity;
+    for (const s of st.stations) {
+      if (!s.prov || Math.abs(s.lat - lat) > 0.4 || Math.abs(s.lon - lon) > 0.5) continue;
+      const d = V.haversine(lat, lon, s.lat, s.lon);
+      if (d < bd) { bd = d; best = s.prov; }
+    }
+    return best;
+  }
+
+  /** Precios en directo del Ministerio para la provincia donde estás (o la del destino). */
+  async function loadLivePrices() {
+    const points = [];
+    if (st.pos) points.push(st.pos);
+    if (st.dest) points.push(st.dest);
+    const provs = [...new Set(points.map(p => provinceAt(p.lat, p.lon)).filter(Boolean))];
+    if (!provs.length) {
+      // Aún no sabemos la provincia: pedimos la lista completa (más pesada) una sola vez.
+      if (st.stations.length >= 8000 || !st.pos) return false;
+      const r = await fetchTimeout(CONFIG.ministerio, 60000, { headers: { Accept: 'application/json' } });
+      const j = await r.json();
+      const fresh = V.parseMinisterio(j);
+      if (fresh.length < 8000) return false;
+      mergeStations(fresh, true);
+      st.pricesAt = V.parseFecha(j.Fecha) || new Date();
+      st.pricesLive = true;
+      return true;
+    }
+    let ok = false;
+    for (const prov of provs) {
+      try {
+        const r = await fetchTimeout(`${CONFIG.ministerio}FiltroProvincia/${prov}`, 30000, { headers: { Accept: 'application/json' } });
+        const j = await r.json();
+        const fresh = V.parseMinisterio(j);
+        if (!fresh.length) continue;
+        mergeStations(fresh, false);
+        const f = V.parseFecha(j.Fecha);
+        if (f && (!st.pricesAt || f > st.pricesAt || !st.pricesLive)) st.pricesAt = f;
+        st.pricesLive = true;
+        ok = true;
+      } catch { /* se reintenta en la próxima actualización */ }
+    }
+    return ok;
+  }
+
   let loadingPrices = false;
   async function loadPrices(force = false) {
     if (loadingPrices) return;
     if (!force && st.pricesFetchedAt && now() - st.pricesFetchedAt < 9 * 60e3) return;
     loadingPrices = true;
     renderGasHeader();
+    // 1) Lista de toda España (la prepara GitHub; puede tener algo de retraso).
     try {
       const r = await fetchTimeout('data/precios.json?v=' + Math.floor(now() / 60e3), 30000);
       if (!r.ok) throw new Error(r.status);
       const j = await r.json();
-      st.stations = V.parsePricesCompact(j);
-      st.pricesAt = new Date(j.actualizado);
-      st.pricesSource = 'auto';
-      if (st.stations.length < 8000) throw new Error('lista incompleta');
-    } catch {
-      try {
-        const r = await fetchTimeout(CONFIG.ministerio, 45000, { headers: { Accept: 'application/json' } });
-        const fresh = V.parseMinisterio(await r.json());
-        const old = new Map(st.stations.map(s => [s.id, s]));
-        for (const s of fresh) {
-          const o = old.get(s.id);
-          if (o) for (const k in s.prices) if (o.prices[k] != null && o.prices[k] !== s.prices[k]) s.prev[k] = o.prices[k];
-        }
-        st.stations = fresh;
-        st.pricesAt = new Date();
-        st.pricesSource = 'directo';
-      } catch {
-        if (!st.stations.length) notice('No se pudieron descargar los precios de las gasolineras.');
+      const list = V.parsePricesCompact(j);
+      if (list.length > st.stations.length * 0.8 || !st.stations.length) {
+        mergeStations(list, true);
+        const f = V.parseFecha(j.fecha_ministerio) || new Date(j.actualizado);
+        if (!st.pricesLive || !st.pricesAt || f > st.pricesAt) st.pricesAt = f;
       }
-    }
+    } catch { /* seguimos con los precios en directo */ }
+    drawStations(); renderCheap(); refreshGasList();
+    // 2) Precios en directo de tu provincia (siempre los últimos publicados).
+    let live = false;
+    try { live = await loadLivePrices(); } catch { live = false; }
+    if (!st.stations.length) notice('No se pudieron descargar los precios de las gasolineras.');
+    st.pricesSource = live ? 'directo' : 'archivo';
     st.pricesFetchedAt = now();
     loadingPrices = false;
     drawStations(); renderCheap(); renderGasHeader(); refreshGasList();
@@ -1287,12 +1348,18 @@
   }
   function setPressed(sel, b) { document.querySelectorAll(`${sel} button`).forEach(x => x.setAttribute('aria-pressed', x === b)); }
 
+  function pricesTimeText() {
+    const d = st.pricesAt;
+    const t = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    return new Date().toDateString() === d.toDateString() ? `hoy a las ${t}` : `${d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })} a las ${t}`;
+  }
+
   function renderGasHeader() {
     const el = $('#gasUpdated');
     if (!el) return;
     if (loadingPrices) { el.textContent = 'Actualizando precios…'; return; }
     el.textContent = st.pricesAt
-      ? `Precios oficiales de las ${st.pricesAt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })} · se actualizan solos`
+      ? `Precios del Ministerio de ${pricesTimeText()}${st.pricesSource === 'directo' ? ' · en directo' : ''} · se actualizan solos`
       : 'Descargando precios oficiales…';
   }
 
@@ -1335,7 +1402,7 @@
       <div class="ptable">${V.FUELS.filter(f => s.prices[f.key] != null).map(f => `
         <div class="${f.key === S.fuel ? 'me-fuel' : ''}"><span>${f.label}</span>${trendHtml(s, f.key)}<b class="price">${fmt.price(s.prices[f.key])} €</b></div>`).join('')}</div>
       <div class="facts"><div>${ic('i-clock')}${esc(s.schedule || 'Horario no disponible')}</div>
-        ${st.pricesAt ? `<div>${ic('i-refresh')}Precios de las ${st.pricesAt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</div>` : ''}</div>
+        ${st.pricesAt ? `<div>${ic('i-refresh')}Precios del Ministerio de ${pricesTimeText()}</div>` : ''}</div>
       <button class="btn-grad" type="button" id="goStation">${ic('i-locate')}Ir aquí${d != null ? ' · ' + fmt.dist(d) : ''}</button>`);
     $('#goStation').addEventListener('click', () => {
       closeSheet();
@@ -1528,7 +1595,7 @@
       <div class="group">
         <div class="opt"><span class="lbl">Radares fijos<small>${esc(st.radarSource || 'Cargando…')}</small></span><b>${st.official.length}</b></div>
         <div class="opt"><span class="lbl">Avisos de conductores<small>${st.communityAt ? 'Actualizado ' + relTime(st.communityAt) : 'Cargando…'}</small></span><b>${allRadars().filter(r => r.source === 'community' && r.status !== 'gone').length}</b></div>
-        <div class="opt"><span class="lbl">Gasolineras<small>${st.pricesAt ? 'Precios de las ' + st.pricesAt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : 'Cargando…'}</small></span><b>${st.stations.length}</b></div>
+        <div class="opt"><span class="lbl">Gasolineras<small>${st.pricesAt ? 'Precios de ' + pricesTimeText() : 'Cargando…'}</small></span><b>${st.stations.length}</b></div>
       </div>
       <p class="fine">Mapa © OpenStreetMap y CARTO · Rutas: OSRM · Precios: Ministerio para la Transición Ecológica. Avisar de radares con una app es legal en España. Respeta siempre los límites.</p>`);
     const body = $('#sheetBody');

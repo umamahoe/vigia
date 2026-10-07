@@ -214,6 +214,20 @@
     return Number.isFinite(n) && n > 0 ? n : null;
   };
 
+  const coord = v => {
+    if (v == null || v === '') return null;
+    const n = parseFloat(String(v).replace(',', '.'));
+    return Number.isFinite(n) && n !== 0 ? n : null;
+  };
+
+  /** "07/10/2026 16:37:00" (hora de España) → Date. */
+  function parseFecha(f) {
+    const m = /(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(f || '');
+    if (!m) return null;
+    const d = new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +(m[6] || 0));
+    return isNaN(d) ? null : d;
+  }
+
   const title = s => (s || '').toLowerCase().replace(/(^|[\s(/-])\p{L}/gu, c => c.toUpperCase());
 
   /** Formato compacto generado por la Action de GitHub (data/precios.json). */
@@ -225,7 +239,7 @@
         if (e[8] && e[8][i] != null) prev[f.key] = e[8][i];
       });
       return { id: String(e[0]), brand: e[1], address: e[2], town: e[3], schedule: e[4],
-        lat: e[5], lon: e[6], prices, prev, changedAt: e[9] || null };
+        lat: e[5], lon: e[6], prices, prev, changedAt: e[9] || null, prov: e[10] || null };
     });
   }
 
@@ -233,7 +247,7 @@
   function parseMinisterio(json) {
     const out = [];
     for (const d of json.ListaEESSPrecio || []) {
-      const lat = num(d['Latitud']), lon = num(d['Longitud (WGS84)']);
+      const lat = coord(d['Latitud']), lon = coord(d['Longitud (WGS84)']);
       if (lat == null || lon == null) continue;
       const prices = {};
       for (const f of FUELS) {
@@ -242,7 +256,7 @@
       if (!Object.keys(prices).length) continue;
       out.push({ id: String(d['IDEESS'] || `${lat},${lon}`), brand: (d['Rótulo'] || '').trim(),
         address: title(d['Dirección']), town: title(d['Localidad'] || d['Municipio']),
-        schedule: d['Horario'] || '', lat, lon, prices, prev: {}, changedAt: null });
+        schedule: d['Horario'] || '', lat, lon, prices, prev: {}, changedAt: null, prov: d['IDProvincia'] || null });
     }
     return out;
   }
@@ -311,6 +325,6 @@
   }
 
   root.VL = { haversine, bearing, angleDiff, prepareLine, project, pointAt, radarsOnLine, fuelLiters, sortRoutes,
-    dedupeRoutes, instruction, fmt, spokenDistance, FUELS, parsePricesCompact, parseMinisterio, brandName,
+    dedupeRoutes, instruction, fmt, spokenDistance, FUELS, parsePricesCompact, parseMinisterio, parseFecha, brandName,
     KINDS, LIFETIME, parseRadarsCompact, radarStatus, communityFromMessages };
 })(typeof window !== 'undefined' ? window : globalThis);
