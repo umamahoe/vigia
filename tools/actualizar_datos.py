@@ -50,6 +50,17 @@ def num(v):
         return None
 
 
+def coord(v):
+    """Coordenada: puede ser negativa (todo lo que está al oeste de Greenwich)."""
+    if v is None or str(v).strip() == "":
+        return None
+    try:
+        n = float(str(v).replace(",", "."))
+        return n if n != 0 else None
+    except ValueError:
+        return None
+
+
 def title(s):
     s = (s or "").strip().lower()
     out, up = [], True
@@ -86,7 +97,7 @@ def build_prices(raw, old, t):
         prev_by_id[str(e[0])] = e
     rows = []
     for d in raw.get("ListaEESSPrecio", []):
-        lat, lon = num(d.get("Latitud")), num(d.get("Longitud (WGS84)"))
+        lat, lon = coord(d.get("Latitud")), coord(d.get("Longitud (WGS84)"))
         if lat is None or lon is None:
             continue
         prices = []
@@ -113,7 +124,8 @@ def build_prices(raw, old, t):
                 prev = [None] * len(FUELS)
         rows.append([sid, (d.get("Rótulo") or "").strip(), title(d.get("Dirección")),
                      title(d.get("Localidad") or d.get("Municipio")), d.get("Horario") or "",
-                     round(lat, 6), round(lon, 6), prices, prev if any(prev) else 0, ts or 0])
+                     round(lat, 6), round(lon, 6), prices, prev if any(prev) else 0, ts or 0,
+                     str(d.get("IDProvincia") or "")])
     return rows
 
 
@@ -126,7 +138,7 @@ def fetch_ministerio():
             raw = get_json(MINISTERIO, timeout=180)
             if best is None or len(raw.get("ListaEESSPrecio", [])) > len(best.get("ListaEESSPrecio", [])):
                 best = raw
-            if len(best.get("ListaEESSPrecio", [])) >= 8000:
+            if len(best.get("ListaEESSPrecio", [])) >= 10000:
                 return best
         except Exception as e:
             print(f"Ministerio (completo): {e}", file=sys.stderr)
@@ -148,7 +160,7 @@ def fetch_ministerio():
 def update_prices():
     raw = fetch_ministerio()
     rows = build_prices(raw, load(PRECIOS), int(time.time()))
-    if len(rows) < 1000:
+    if len(rows) < 8000:
         raise RuntimeError(f"Solo {len(rows)} gasolineras: no se sobrescribe")
     write_lines(PRECIOS, {"actualizado": now_iso(), "fecha_ministerio": raw.get("Fecha", "")}, "e", rows)
     print(f"Precios: {len(rows)} gasolineras")
