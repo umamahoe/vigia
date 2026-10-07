@@ -2,7 +2,7 @@ name: Actualizar datos
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # cada 30 minutos (GitHub puede retrasarlo unos minutos)
+    - cron: "7,27,47 * * * *"   # cada 20 minutos (GitHub a veces lo retrasa; la app pide además los precios en directo)
   workflow_dispatch:          # botón "Run workflow" para lanzarlo a mano
 
 permissions:
