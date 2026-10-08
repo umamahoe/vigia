@@ -87,7 +87,7 @@
     for (const r of radars) {
       if (r.lon < a - m || r.lon > c + m || r.lat < b - m || r.lat > d + m) continue;
       const p = project(line, r.lat, r.lon);
-      if (p.dist < tol) out.push({ radar: r, along: p.along });
+      if (p.dist < tol) out.push({ radar: r, along: p.along, dist: p.dist });
     }
     return out.sort((x, y) => x.along - y.along);
   }
@@ -146,8 +146,8 @@
     let text;
     switch (type) {
       case 'depart': text = name ? `Sal por ${name}` : 'Inicia la ruta'; break;
-      case 'arrive': text = mod === 'left' ? 'El destino está a la izquierda'
-        : mod === 'right' ? 'El destino está a la derecha' : 'Has llegado a tu destino'; break;
+      case 'arrive': text = mod === 'left' ? 'Tu destino está a la izquierda'
+        : mod === 'right' ? 'Tu destino está a la derecha' : 'Tu destino está más adelante'; break;
       case 'turn': case 'end of road':
         text = mod === 'uturn' ? `Haz el cambio de sentido${por}`
           : mod === 'straight' ? `Sigue recto${por}`

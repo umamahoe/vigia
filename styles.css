@@ -112,6 +112,19 @@ svg { width: 22px; height: 22px; flex: none; }
   color: var(--muted); padding: 4px 8px; border-radius: 10px; background: rgba(255, 255, 255, .06); }
 .then svg { width: 18px; height: 18px; color: var(--fg); }
 
+/* Carriles */
+.lanes { align-self: center; display: flex; align-items: stretch; gap: 0; padding: 6px 8px; border-radius: 18px; margin-top: -2px; }
+.lane { width: 40px; height: 44px; display: grid; place-items: center; color: rgba(214, 222, 240, .28); }
+.lane svg { width: 30px; height: 30px; }
+.lane.ok { color: #fff; }
+.lane.ok svg { filter: drop-shadow(0 0 6px rgba(0, 224, 198, .55)); }
+.lane-sep { width: 0; border-left: 2px dashed rgba(255, 255, 255, .22); margin: 4px 0; }
+
+/* Modo de voz */
+.opt.col { flex-direction: column; align-items: stretch; gap: 8px; }
+.seg-4 button { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 12px; padding: 8px 2px; }
+.seg-4 button svg { width: 20px; height: 20px; }
+
 .notice { align-self: center; padding: 8px 14px; border-radius: 14px; font-size: 13px; font-weight: 500; color: #FFD7A8; }
 
 /* Abajo */

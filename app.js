@@ -33,6 +33,8 @@
 
   // ---------- Ajustes ----------
   const DEFAULTS = {
+    // Voz: 'all' = indicaciones y radares · 'directions' = solo indicaciones · 'alerts' = solo radares · 'none' = nada
+    voiceMode: 'all', silentOverride: true,
     voiceGuide: true, radarVoice: true, radarSound: true, maneuverSound: true,
     alertFar: true, alertNear: true, speeding: true,
     layer: 'all', showGone: true, mapStyle: 'dark',
@@ -44,6 +46,19 @@
   const shown = kind => S['sh_' + kind] !== false;
   const S = Object.assign({}, DEFAULTS, store.get('settings', {}));
   const saveS = () => store.set('settings', S);
+  if (!('voiceMode' in store.get('settings', {}))) {   // ajustes antiguos → modo de voz
+    const old = store.get('settings', {});
+    const g = old.voiceGuide !== false, r = old.radarVoice !== false || old.radarSound !== false;
+    S.voiceMode = g && r ? 'all' : g ? 'directions' : r ? 'alerts' : 'none';
+  }
+  const VOICE_MODES = {
+    all: { label: 'Indicaciones y radares', icon: 'i-vol' },
+    directions: { label: 'Solo indicaciones', icon: 'm-right' },
+    alerts: { label: 'Solo avisos de radar', icon: 'i-camera' },
+    none: { label: 'Sin voz ni sonidos', icon: 'i-mute' },
+  };
+  const wantDirections = () => S.voiceMode === 'all' || S.voiceMode === 'directions';
+  const wantAlerts = () => S.voiceMode === 'all' || S.voiceMode === 'alerts';
   let deviceId = store.get('device', null);
   if (!deviceId) { deviceId = Math.random().toString(36).slice(2, 10); store.set('device', deviceId); }
 
@@ -61,9 +76,35 @@
     return st.official.map(r => ({ ...r, status: 'active' })).concat(com);
   };
   const alertable = () => allRadars().filter(r => r.status !== 'gone' && shown(r.kind));
-  /** Radares de una ruta que te afectan: sobre el camino y en tu sentido de marcha. */
-  const routeRadars = line => V.radarsOnLine(line, alertable())
-    .filter(x => x.radar.dir == null || V.angleDiff(x.radar.dir, V.pointAt(line, x.along).bearing) < 60);
+  /** Solo se fía del sentido de un radar si viene de un aviso de conductor o de un tramo de la DGT. */
+  const dirKnown = r => r.dir != null && (r.source === 'community' || r.origin === 'dgt');
+  const roadCode = s => String(s || '').toUpperCase().replace(/\s+KM.*$/, '').replace(/[\s]/g, '');
+  /** Radares de una ruta que te afectan: sobre el camino y en tu sentido de marcha.
+   *  Las listas oficiales a veces sitúan el radar a 50-150 m de la línea de la ruta: si el
+   *  radar es de la misma carretera que ese tramo de la ruta, también cuenta. */
+  function routeRadars(route) {
+    const line = route.line, spans = route.spans || [];
+    return V.radarsOnLine(line, alertable(), 150).filter(x => {
+      const r = x.radar;
+      if (dirKnown(r) && V.angleDiff(r.dir, V.pointAt(line, x.along).bearing) > 60) return false;
+      if (x.dist < 50) return true;
+      const code = roadCode(r.road);
+      if (!code) return false;
+      let span = null;
+      for (const sp of spans) { if (sp.along <= x.along + 1) span = sp; else break; }
+      return !!(span && span.refs.includes(code));
+    });
+  }
+  /** Tramos de la ruta con su carretera (para saber por qué vía va cada parte). */
+  function routeSpans(line, steps) {
+    let hint = 0;
+    return steps.map(s => {
+      const [lon, lat] = s.maneuver.location;
+      const p = V.project(line, lat, lon, hint); hint = p.idx;
+      const refs = String(s.ref || '').split(/[;,]/).concat(String(s.name || '').split(/[;,]/)).map(roadCode).filter(Boolean);
+      return { along: p.along, refs };
+    });
+  }
   const findRadar = id => allRadars().find(r => r.id === id);
 
   // ---------- Audio y voz ----------
@@ -76,17 +117,28 @@
   }
   if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
 
+  /** En iPhone, con el interruptor de silencio puesto, Safari no suena (ni voz ni pitidos)
+   *  salvo que la web pida el modo "reproducción". */
+  function applyAudioSession() {
+    try { if (navigator.audioSession) navigator.audioSession.type = S.silentOverride ? 'playback' : 'auto'; } catch { /* no soportado */ }
+  }
+  // iOS solo deja hablar/sonar si la primera vez ocurre al tocar la pantalla: se "desbloquea" en cada toque.
   function unlockAudio() {
+    applyAudioSession();
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-      audio.resume();
+      if (audio.state !== 'running') audio.resume();
       const b = audio.createBuffer(1, 1, 22050), s = audio.createBufferSource();
       s.buffer = b; s.connect(audio.destination); s.start(0);
     } catch { audio = null; }
-    if ('speechSynthesis' in window) {
-      const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u);
+    if ('speechSynthesis' in window && !unlockAudio.voiceDone) {
+      unlockAudio.voiceDone = true;
+      const u = new SpeechSynthesisUtterance('.'); u.volume = 0.01; u.rate = 2; u.lang = 'es-ES';
+      speechSynthesis.speak(u);
     }
   }
+  addEventListener('touchend', () => { if (!audio || audio.state !== 'running') unlockAudio(); }, { passive: true });
+  addEventListener('click', () => { if (!audio || audio.state !== 'running') unlockAudio(); });
 
   function tone(freq, at, dur, vol) {
     const o = audio.createOscillator(), o2 = audio.createOscillator(), g = audio.createGain();
@@ -113,13 +165,23 @@
     for (const [f, d, dur, v] of SOUNDS[name]) tone(f, t + d, dur, v);
   }
 
+  const speaking = [];   // Safari descarta frases si no se guarda una referencia hasta que acaban
   function say(text, priority = false) {
     if (!('speechSynthesis' in window) || !text) return;
-    if (priority) speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'es-ES'; if (esVoice) u.voice = esVoice;
-    u.rate = 1.02;
-    speechSynthesis.speak(u);
+    const ss = speechSynthesis;
+    const go = () => {
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'es-ES'; if (esVoice) u.voice = esVoice;
+      u.rate = 1.02; u.volume = 1;
+      u.onend = u.onerror = () => { const i = speaking.indexOf(u); if (i >= 0) speaking.splice(i, 1); };
+      speaking.push(u);
+      if (ss.paused) ss.resume();
+      ss.speak(u);
+    };
+    applyAudioSession();
+    if (audio && audio.state !== 'running') audio.resume();
+    // Cancelar y hablar en el mismo instante hace que Safari se coma la frase nueva.
+    if (priority && (ss.speaking || ss.pending)) { ss.cancel(); setTimeout(go, 120); } else go();
   }
 
   let wakeLock = null;
@@ -130,6 +192,9 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       keepAwake();
+      // Al volver de segundo plano la voz de iOS a veces se queda atascada.
+      if ('speechSynthesis' in window && !speaking.length) speechSynthesis.cancel();
+      if (audio && audio.state !== 'running') audio.resume().catch(() => {});
       loadPrices(); pollCommunity();
     }
   });
@@ -248,7 +313,7 @@
 
   function drawRadars() {
     if (!map.getSource('radars')) return;
-    const show = S.layer === 'all' || S.layer === 'radars';
+    const show = !!st.nav || S.layer === 'all' || S.layer === 'radars';
     let src = allRadars();
     if (st.nav) {
       const prog = st.nav.progress;
@@ -520,7 +585,10 @@
       const p = V.project(st.nav.line, fix.lat, fix.lon, st.nav.hint);
       if (p.dist < Math.max(40, fix.acc)) {
         const pt = V.pointAt(st.nav.line, p.along + (v > 1 ? v * dt : 0));
-        return { lat: pt.lat, lon: pt.lon, bearing: pt.bearing };
+        // Si vas en sentido contrario a la ruta (no has seguido la indicación), la flecha
+        // muestra hacia dónde vas de verdad, no el sentido de la ruta.
+        const against = v > 1.5 && st.heading != null && V.angleDiff(st.heading, pt.bearing) > 75;
+        if (!against) return { lat: pt.lat, lon: pt.lon, bearing: pt.bearing };
       }
     }
     let lat = fix.lat, lon = fix.lon;
@@ -601,7 +669,7 @@
       addNearbyOsm(extra);
       st.radarSource = `${j.fuente || 'OpenStreetMap'} · ${new Date(j.actualizado).toLocaleDateString('es-ES')}`;
       drawRadars();
-      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
+      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
     } catch {
       if (st.pos) loadOverpassAround(st.pos.lat, st.pos.lon);
     }
@@ -638,7 +706,7 @@
         if (addNearbyOsm(list)) {
           if (empty) st.radarSource = 'OpenStreetMap (50 km a tu alrededor)';
           drawRadars();
-          if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
+          if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
         }
         return;
       } catch { /* probar el siguiente servidor */ }
@@ -657,7 +725,7 @@
       st.community = V.communityFromMessages(msgs);
       st.communityAt = now();
       drawRadars();
-      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
+      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
       refreshOpenRadarDetail();
     } catch { /* sin conexión: se reintenta */ }
   }
@@ -698,7 +766,7 @@
       await publish({ t: 'x', id, d: deviceId });
       st.community = st.community.filter(r => r.id !== id);
       drawRadars();
-      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
+      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
       toast('Aviso borrado');
       setTimeout(pollCommunity, 800);
       return true;
@@ -855,13 +923,14 @@
       const steps = rt.legs.flatMap(l => l.steps);
       const hasTolls = steps.some(s => (s.intersections || []).some(i => (i.classes || []).includes('toll')));
       const line = V.prepareLine(coords);
+      const spans = routeSpans(line, steps);
       const liters = V.fuelLiters(rt.distance, rt.duration, S.consumption);
       return {
-        id: 'r' + (++routeSeq), coords, line, steps, hasTolls,
+        id: 'r' + (++routeSeq), coords, line, spans, steps, hasTolls,
         distance: rt.distance, duration: rt.duration,
         via: rt.legs.map(l => l.summary).filter(Boolean).join(', '),
         liters, cost: liters * price, price,
-        radars: routeRadars(line),
+        radars: routeRadars({ line, spans }),
       };
     });
     return V.dedupeRoutes(list);
@@ -874,7 +943,7 @@
     st.routes = []; st.selectedId = null;
     openPlanner(true);
     try {
-      st.routes = await computeRoutes(from, st.dest);
+      st.routes = await computeRoutes(from, st.dest, st.origin.current && st.speed > 8 ? st.heading : null);
       st.selectedId = visibleRoutes()[0]?.id || null;
       drawRoutes();
       const sel = selectedRoute(); if (sel) fitRoute(sel);
@@ -892,10 +961,11 @@
       const [lon, lat] = s.maneuver.location;
       const p = V.project(route.line, lat, lon, hint);
       hint = p.idx;
-      return { ...V.instruction(s), along: p.along, length: s.distance };
+      const lanes = ((s.intersections || [])[0] || {}).lanes || null;
+      return { ...V.instruction(s), along: p.along, length: s.distance, lanes };
     });
-    return { route, line: route.line, steps, hint: 0, spoken: {}, off: 0, rerouting: false, lastReroute: 0,
-      arrived: false, progress: 0, radarsOn: routeRadars(route.line) };
+    return { route, line: route.line, steps, hint: 0, spoken: {}, off: 0, wrong: 0, rerouting: false, lastReroute: 0,
+      arrived: false, progress: 0, radarsOn: routeRadars(route) };
   }
 
   function startNav() {
@@ -911,25 +981,32 @@
     $('#cheapPill').hidden = true;
     drawRoutes(); drawStations(); drawRadars();
     keepAwake();
-    if (st.pos) {
-      // Orienta la cámara en el sentido de la ruta desde el primer momento.
+    if (st.speed > 5 && st.heading != null) dispBearing = st.heading;   // hacia donde vas de verdad
+    else if (st.pos) {
+      // Parado: orienta la cámara en el sentido de la ruta.
       const p0 = V.project(st.nav.line, st.pos.lat, st.pos.lon);
       dispBearing = V.pointAt(st.nav.line, p0.along + 10).bearing;
     }
     setFollow(true);
-    if (S.voiceGuide) {
-      const n = r.radars.length;
-      say(`Iniciando ruta. ${fmt.dur(r.duration).replace('min', 'minutos').replace(' h ', ' horas ')}, ${V.spokenDistance(r.distance)}.` +
-        (n ? ` Hay ${n} radar${n === 1 ? '' : 'es'} en el camino.` : ''));
+    unlockAudio();
+    const n = st.nav.radarsOn.length;
+    const radarsTxt = n ? ` Hay ${n} radar${n === 1 ? '' : 'es'} en el camino.` : ' No hay radares en el camino.';
+    if (wantDirections()) {
+      say(`Iniciando ruta. ${spokenDur(r.duration)}, ${V.spokenDistance(r.distance)}.` + (wantAlerts() ? radarsTxt : ''));
+    } else if (wantAlerts()) {
+      say(radarsTxt.trim());
     }
     if (st.pos) updateNav(st.pos.lat, st.pos.lon);
   }
+
+  const spokenDur = sec => fmt.dur(sec).replace(/(\d+) h (\d+) min/, (m, h, mi) => `${h} hora${h === '1' ? '' : 's'} y ${mi} minutos`).replace(/(\d+) min$/, '$1 minutos');
 
   function endNav() {
     st.nav = null;
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     document.body.classList.remove('navigating');
     $('#maneuver').hidden = true; $('#navbar').hidden = true; $('#arrived').hidden = true;
+    renderLanes(null);
     $('#topbar').hidden = false; $('#chips').hidden = false;
     $('#gasBtn').hidden = false; $('#voiceBtn').hidden = true;
     clearRoute();
@@ -949,7 +1026,11 @@
 
     const tol = Math.max(40, st.acc * 1.5);
     n.off = p.dist > tol ? n.off + 1 : 0;
-    if (n.off >= 2 && now() - n.lastReroute > 8000) { reroute(); return; }
+    // Sentido contrario: estás sobre la ruta pero vas al revés (p. ej. no se podía girar a la izquierda).
+    const rb = V.pointAt(n.line, p.along).bearing;
+    const wrongWay = st.speed > 8 && st.heading != null && V.angleDiff(st.heading, rb) > 110;
+    n.wrong = wrongWay ? n.wrong + 1 : 0;
+    if ((n.off >= 2 || n.wrong >= 3) && now() - n.lastReroute > 8000) { reroute(); return; }
     // Los radares ya pasados desaparecen del mapa
     if (now() - (n.radarDrawAt || 0) > 5000) { n.radarDrawAt = now(); drawRadars(); }
 
@@ -966,7 +1047,8 @@
         $('#navbar').hidden = true; $('#arrived').hidden = false;
         $('#arrivedName').textContent = st.dest.name;
         setManeuver('flag', 'Has llegado a tu destino', 0);
-        if (S.voiceGuide) say('Has llegado a tu destino', true);
+        renderLanes(null);
+        if (wantDirections()) say('Has llegado a tu destino', true);
       }
       return;
     }
@@ -975,10 +1057,41 @@
     if (i < 0) return;
     const step = n.steps[i], d = step.along - p.along;
     setManeuver(step.icon, step.text, d);
+    renderLanes(d < (st.speed > 75 ? 1500 : 800) ? step.lanes : null);
     const next = n.steps[i + 1];
     $('#thenBox').hidden = !(next && next.along - step.along < 250 && next.type !== 'arrive');
     if (next) $('#thenIcon').innerHTML = `<use href="#m-${next.icon}"/>`;
     announce(i, step, d);
+  }
+
+  // ---------- Carriles ----------
+  // OSRM da, en cada cruce que lo tiene en OpenStreetMap, los carriles y cuáles sirven para la maniobra.
+  const LANE_ICON = { straight: 'm-straight', none: 'm-straight', left: 'm-left', 'sharp left': 'm-left',
+    right: 'm-right', 'sharp right': 'm-right', 'slight left': 'm-slight-left', 'slight right': 'm-slight-right', uturn: 'm-uturn' };
+  function renderLanes(lanes) {
+    const el = $('#lanes');
+    const useful = lanes && lanes.length >= 2 && lanes.some(l => l.valid) && lanes.some(l => !l.valid);
+    if (!useful) { if (!el.hidden) { el.hidden = true; el.dataset.k = ''; } return; }
+    const k = JSON.stringify(lanes);
+    if (el.dataset.k === k && !el.hidden) return;
+    el.dataset.k = k;
+    el.innerHTML = lanes.map(l => {
+      const inds = (l.indications && l.indications.length ? l.indications : ['straight']);
+      return `<div class="lane${l.valid ? ' ok' : ''}"><svg viewBox="0 0 48 48">${inds.map(x => `<use href="#${LANE_ICON[x] || 'm-straight'}"/>`).join('')}</svg></div>`;
+    }).join('<span class="lane-sep"></span>');
+    el.hidden = false;
+  }
+  /** "por el carril izquierdo", "por los 2 carriles de la derecha"… o '' si no aporta. */
+  function laneHint(lanes) {
+    if (!lanes || lanes.length < 2) return '';
+    const ok = lanes.map(l => !!l.valid), n = ok.filter(Boolean).length, total = ok.length;
+    if (!n || n === total) return '';
+    const first = ok.indexOf(true), last = ok.lastIndexOf(true);
+    if (last - first + 1 !== n) return '';
+    const cnt = n === 1 ? 'por el carril' : `por los ${n} carriles`;
+    if (first === 0) return n === 1 ? 'por el carril izquierdo' : `${cnt} de la izquierda`;
+    if (last === total - 1) return n === 1 ? 'por el carril derecho' : `${cnt} de la derecha`;
+    return n === 1 ? 'por el carril central' : `${cnt} centrales`;
   }
 
   function setManeuver(icon, text, d) {
@@ -989,15 +1102,16 @@
   }
 
   function announce(i, step, d) {
-    if (!S.voiceGuide || step.type === 'arrive' && d > 300) return;
+    if (!wantDirections() || step.type === 'arrive' && d > 300) return;
     const n = st.nav, fast = st.speed > 75;
     const farAt = fast ? 2000 : 800, midAt = fast ? 700 : 250, nowAt = Math.max(40, st.speed / 3.6 * 4);
     const done = n.spoken[i] || (n.spoken[i] = new Set());
-    const lower = step.text.charAt(0).toLowerCase() + step.text.slice(1);
+    const lanes = laneHint(step.lanes);
+    const lower = step.text.charAt(0).toLowerCase() + step.text.slice(1) + (lanes ? `, ${lanes}` : '');
     if (d <= nowAt && !done.has(2)) {
       [0, 1, 2].forEach(x => done.add(x));
       if (S.maneuverSound) play('maneuver');
-      say(step.text);
+      say(step.text + (lanes && d > 60 ? `, ${lanes}` : ''));
     } else if (d <= midAt && d > nowAt * 1.5 && !done.has(1)) {
       done.add(0); done.add(1);
       say(`En ${V.spokenDistance(d)}, ${lower}`);
@@ -1012,15 +1126,16 @@
     if (!n || !st.pos) return;
     n.rerouting = true; n.lastReroute = now();
     setManeuver('reroute', 'Buscando el mejor camino…', 0);
-    if (S.voiceGuide) say('Recalculando ruta', true);
+    renderLanes(null);
+    if (wantDirections()) say('Recalculando ruta', true);
     try {
-      st.routes = await computeRoutes(st.pos, st.dest, st.speed > 10 ? st.heading : null);
+      st.routes = await computeRoutes(st.pos, st.dest, st.speed > 5 ? st.heading : null);
       const best = visibleRoutes()[0];
       if (best && st.nav) {
         st.selectedId = best.id;
         st.nav = prepareNav(best);
         drawRoutes(); drawRadars();
-        if (S.voiceGuide) say(`Nueva ruta. ${fmt.dur(best.duration).replace('min', 'minutos').replace(' h ', ' horas ')} hasta el destino.`);
+        if (wantDirections()) say(`Nueva ruta. ${spokenDur(best.duration)} hasta el destino.`);
       }
     } catch {
       if (st.nav) { st.nav.rerouting = false; st.nav.off = 0; }
@@ -1049,7 +1164,7 @@
         if (d > 1200) continue;
         if (moving) {
           if (V.angleDiff(h, V.bearing(lat, lon, r.lat, r.lon)) > 50 && d > 40) continue;
-          if (r.dir != null && V.angleDiff(h, r.dir) > 60) continue;
+          if (dirKnown(r) && V.angleDiff(h, r.dir) > 60) continue;
         }
         if (!best || d < best.d) best = { r, d };
       }
@@ -1071,22 +1186,22 @@
     const label = V.KINDS[r.kind].label;
     if (d <= 520 && !done.has(2)) {
       done.add(1); done.add(2);
-      if (S.alertNear) {
+      if (S.alertNear && wantAlerts()) {
         if (S.radarSound) play('near');
-        if (S.radarVoice) say(`${label} a 500 metros${limitTxt}`, true);
+        if (S.radarVoice) setTimeout(() => say(`${label} a 500 metros${limitTxt}`, true), S.radarSound ? 650 : 0);
         if (navigator.vibrate) navigator.vibrate([120, 80, 120]);
       }
     } else if (d <= 1050 && d > 620 && !done.has(1)) {
       done.add(1);
-      if (S.alertFar) {
+      if (S.alertFar && wantAlerts()) {
         if (S.radarSound) play('far');
-        if (S.radarVoice) say(`${label} a 1 kilómetro`);
+        if (S.radarVoice) setTimeout(() => say(`${label} a ${V.spokenDistance(Math.max(600, Math.round(d / 100) * 100))}${limitTxt}`), S.radarSound ? 900 : 0);
         if (navigator.vibrate) navigator.vibrate(100);
       }
     }
     if (S.speeding && r.limit && d < 450 && st.speed > r.limit + 3 && !done.has(3)) {
       done.add(3);
-      if (S.radarVoice) say('Reduce la velocidad', true); else if (S.radarSound) play('near');
+      if (wantAlerts()) { if (S.radarVoice) say('Reduce la velocidad', true); else if (S.radarSound) play('near'); }
     }
     radarStages.set(r.id, done);
     renderBanner();
@@ -1176,10 +1291,10 @@
   }
 
   function renderVoiceBtn() {
-    const b = $('#voiceBtn');
-    b.innerHTML = ic(S.voiceGuide ? 'i-vol' : 'i-mute');
-    b.classList.toggle('off', !S.voiceGuide);
-    b.setAttribute('aria-label', S.voiceGuide ? 'Silenciar guía por voz' : 'Activar guía por voz');
+    const b = $('#voiceBtn'), m = VOICE_MODES[S.voiceMode] || VOICE_MODES.all;
+    b.innerHTML = ic(m.icon);
+    b.classList.toggle('off', S.voiceMode === 'none');
+    b.setAttribute('aria-label', 'Voz: ' + m.label);
   }
 
   let toastTimer = null;
@@ -1617,7 +1732,7 @@
   function applyVisibility() {
     renderChips(); drawRadars(); drawStations(); renderCheap();
     currentRadar = null; renderBanner();
-    if (st.nav) st.nav.radarsOn = routeRadars(st.nav.line);
+    if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
   }
 
   function onSettingChange(e) {
@@ -1630,7 +1745,7 @@
     if (k === 'layer') { renderChips(); drawRadars(); drawStations(); }
     if (k === 'showGone') drawRadars();
     if (k === 'fuel') { drawStations(); renderCheap(); }
-    if (k === 'voiceGuide') renderVoiceBtn();
+    if (k === 'silentOverride') applyAudioSession();
   }
 
   // --- Ajustes ---
@@ -1648,10 +1763,14 @@
       <div class="about">${ic('logo')}<div><b class="grad">Vigía</b><div class="fine">Radares · Rutas · Gasolineras</div></div></div>
       <div class="section-label">Asistente de voz y sonidos</div>
       <div class="group">
-        ${sw('voiceGuide', 'Guía por voz', 'Te indica cada giro durante la ruta')}
-        ${sw('radarVoice', 'Avisos de radar por voz')}
-        ${sw('radarSound', 'Sonido de radar')}
-        ${sw('maneuverSound', 'Sonido antes de girar')}
+        <div class="opt col"><span class="lbl">Qué quieres oír</span>
+          <div class="seg seg-4" id="voiceSeg">${Object.entries(VOICE_MODES).map(([k, m]) =>
+            `<button type="button" data-voice="${k}" aria-pressed="${S.voiceMode === k}">${ic(m.icon)}<span>${{ all: 'Ambas', directions: 'Indicaciones', alerts: 'Radares', none: 'Nada' }[k]}</span></button>`).join('')}</div>
+          <small class="fine" id="voiceDesc">${VOICE_MODES[S.voiceMode].label}</small></div>
+        ${sw('radarVoice', 'Decir el radar en voz alta', 'Ej.: «Radar fijo a 500 metros. Límite 80»')}
+        ${sw('radarSound', 'Pitido de radar')}
+        ${sw('maneuverSound', 'Pitido antes de girar')}
+        ${isIOS ? sw('silentOverride', 'Sonar con el iPhone en silencio', 'Si no, con el botón de silencio no se oye nada. Puede pausar tu música mientras habla') : ''}
       </div>
       <div class="section-label">Avisos de radar</div>
       <div class="group">
@@ -1698,7 +1817,13 @@
       if (!t) return;
       if (t.dataset.test === 'far') play('far');
       if (t.dataset.test === 'near') play('near');
-      if (t.dataset.test === 'voice') say('Radar fijo a 500 metros. Límite 80', true);
+      if (t.dataset.test === 'voice') { unlockAudio(); say('En 300 metros, toma la salida hacia Manresa. Radar fijo a 500 metros. Límite 80', true); }
+      if (t.dataset.voice) {
+        S.voiceMode = t.dataset.voice; saveS(); renderVoiceBtn();
+        setPressed('#voiceSeg', t);
+        $('#voiceDesc').textContent = VOICE_MODES[S.voiceMode].label;
+        if ('speechSynthesis' in window) speechSynthesis.cancel();
+      }
       if (t.dataset.step) {
         S.consumption = Math.min(25, Math.max(2, Math.round((S.consumption + +t.dataset.step) * 10) / 10));
         saveS(); $('#consVal').textContent = fmt.liters(S.consumption);
@@ -1717,10 +1842,13 @@
     setFollow(true);
   });
   $('#cheapPill').addEventListener('click', e => openStation(e.currentTarget.dataset.id));
+  // Durante la ruta, cada toque cambia el modo: ambas → solo radares → solo indicaciones → nada.
   $('#voiceBtn').addEventListener('click', () => {
-    S.voiceGuide = !S.voiceGuide; saveS(); renderVoiceBtn();
-    if (!S.voiceGuide && 'speechSynthesis' in window) speechSynthesis.cancel();
-    toast(S.voiceGuide ? 'Guía por voz activada' : 'Guía por voz silenciada');
+    const order = ['all', 'alerts', 'directions', 'none'];
+    S.voiceMode = order[(order.indexOf(S.voiceMode) + 1) % order.length]; saveS(); renderVoiceBtn();
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    toast('Voz: ' + VOICE_MODES[S.voiceMode].label);
+    if (S.voiceMode !== 'none') setTimeout(() => say(VOICE_MODES[S.voiceMode].label), 150);
   });
   $('#endBtn').addEventListener('click', endNav);
   $('#arrivedBtn').addEventListener('click', endNav);
