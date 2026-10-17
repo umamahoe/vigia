@@ -349,3 +349,37 @@ svg { width: 22px; height: 22px; flex: none; }
 .del-btn:disabled { opacity: .5; }
 .toast { display: flex; align-items: center; gap: 14px; }
 .toast button { flex: none; padding: 6px 12px; border-radius: 99px; background: var(--brand); color: var(--night); font: 700 14px var(--font-display); }
+
+/* Mi coche */
+.fab.car { color: var(--fg); }
+.car-head { display: flex; align-items: center; gap: 12px; }
+.car-head > svg { width: 44px; height: 44px; color: var(--teal); flex: none; }
+.car-head > div { flex: 1; min-width: 0; }
+.car-head b { font: 700 19px var(--font-display); }
+.car-km { display: flex; flex-direction: column; align-items: flex-end; padding: 8px 12px; border-radius: 14px; background: rgba(255, 255, 255, .07); }
+.car-km small { font-size: 11px; color: var(--muted); }
+.car-km b { font: 700 15px var(--font-display); font-variant-numeric: tabular-nums; }
+.car-alert { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 16px; background: rgba(255, 200, 58, .12); color: var(--mid); font-size: 14px; line-height: 1.35; }
+.car-alert svg { width: 20px; height: 20px; flex: none; margin-top: 1px; }
+.car-alert b { color: var(--fg); }
+#carTabs button { font-size: 13px; padding: 9px 2px; }
+.car-row { width: 100%; text-align: left; }
+.car-row > svg { width: 22px; height: 22px; color: var(--teal); flex: none; }
+.car-row .chev { color: var(--muted); font-size: 22px; }
+.car-pill { flex: none; padding: 4px 10px; border-radius: 99px; font: 600 12px var(--font-display); white-space: nowrap; background: rgba(255, 255, 255, .08); color: var(--muted); }
+.car-pill.ok { background: rgba(52, 216, 115, .15); color: var(--cheap); }
+.car-pill.soon { background: rgba(255, 200, 58, .16); color: var(--mid); }
+.car-pill.late { background: rgba(255, 69, 84, .18); color: var(--red); }
+.car-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.car-stats > div { display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; border-radius: 16px; background: rgba(255, 255, 255, .05); min-width: 0; }
+.car-stats small { font-size: 11px; color: var(--muted); }
+.car-stats b { font: 700 17px var(--font-display); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.car-cheap { border-radius: 16px; background: rgba(52, 216, 115, .1); text-align: left; width: 100%; }
+.car-cheap b { color: var(--cheap); }
+.car-form input { width: 44%; min-width: 0; background: rgba(255, 255, 255, .08); border: 0; border-radius: 10px; padding: 9px 10px; font-size: 16px; text-align: right; outline: 0; }
+.car-form input[type=date] { -webkit-appearance: none; appearance: none; min-height: 38px; }
+.car-val { text-align: right; max-width: 55%; font-weight: 600; font-size: 14px; }
+.car-del { width: 30px; height: 30px; margin-right: -6px; }
+.car-del svg { width: 16px; height: 16px; }
+.btn-ghost { padding: 14px 16px; border-radius: 16px; background: rgba(255, 255, 255, .08); font: 600 15px var(--font-display); white-space: nowrap; }
+.link-btn { align-self: center; padding: 8px; color: var(--teal); font: 600 14px var(--font-display); }

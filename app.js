@@ -1321,7 +1321,7 @@
     sheetKind = kind; sheetData = data || null;
     $('#sheetTitle').textContent = title;
     $('#sheetBody').innerHTML = html;
-    $('#sheet').classList.toggle('full', kind === 'search' || kind === 'settings');
+    $('#sheet').classList.toggle('full', kind === 'search' || kind === 'settings' || kind === 'car');
     $('#sheet').hidden = false; $('#scrim').hidden = false;
     $('#sheetBody').scrollTop = 0;
   }
@@ -1799,6 +1799,7 @@
       </div>
       <div class="section-label">Mi coche</div>
       <div class="group">
+        <button type="button" class="opt car-row" data-act="car">${ic('i-car')}<span class="lbl">${CAR_SPEC.name} ${CAR_SPEC.sub}<small>Revisiones, gasolina y papeles</small></span><span class="chev">›</span></button>
         ${sel('fuel', 'Combustible', V.FUELS.map(f => [f.key, f.label]))}
         <div class="opt"><span class="lbl">Consumo medio<small>Litros cada 100 km</small></span>
           <div class="stepper"><button type="button" data-step="-0.1" aria-label="Menos">−</button><b id="consVal">${fmt.liters(S.consumption)}</b><button type="button" data-step="0.1" aria-label="Más">+</button></div></div>
@@ -1815,6 +1816,7 @@
     body.onclick = e => {
       const t = e.target.closest('button');
       if (!t) return;
+      if (t.dataset.act === 'car') return openCar();
       if (t.dataset.test === 'far') play('far');
       if (t.dataset.test === 'near') play('near');
       if (t.dataset.test === 'voice') { unlockAudio(); say('En 300 metros, toma la salida hacia Manresa. Radar fijo a 500 metros. Límite 80', true); }
@@ -1831,11 +1833,238 @@
     };
   }
 
+  // ---------- Mi coche ----------
+  // Peugeot 206 1.4 75 CV (2002). Intervalos orientativos: si tu taller o el libro de mantenimiento dicen otra cosa, cámbialos.
+  const CAR_SPEC = {
+    name: 'Peugeot 206', sub: '1.4 · 75 CV · 2002', engine: '1.4 de 8 válvulas (1.360 cc), 75 CV',
+    fuel: 'g95', fuelLabel: 'Gasolina 95', tank: 50, consumption: 6.8, label: 'B (verde)',
+    oil: 'Unos 3 L con filtro · 10W-40 o 5W-40',
+  };
+  const MAINT = [
+    { k: 'aceite', name: 'Aceite y filtro de aceite', km: 15000, months: 12, tip: CAR_SPEC.oil },
+    { k: 'aire', name: 'Filtro de aire', km: 30000, months: 24 },
+    { k: 'polen', name: 'Filtro de habitáculo (polen)', km: 15000, months: 12 },
+    { k: 'gasolina', name: 'Filtro de gasolina', km: 60000, months: 48 },
+    { k: 'bujias', name: 'Bujías', km: 30000, months: 36 },
+    { k: 'distribucion', name: 'Correa de distribución y bomba de agua', km: 80000, months: 60, tip: 'Si se rompe, el motor se estropea. Mejor no apurarla.' },
+    { k: 'accesorios', name: 'Correa de accesorios', km: 80000, months: 60 },
+    { k: 'liqfrenos', name: 'Líquido de frenos', km: 0, months: 24 },
+    { k: 'refrigerante', name: 'Anticongelante', km: 0, months: 48 },
+    { k: 'pastillas', name: 'Pastillas de freno (revisar)', km: 20000, months: 24 },
+    { k: 'neumaticos', name: 'Neumáticos', km: 40000, months: 72, tip: 'Revisa la presión una vez al mes. La correcta está en la pegatina de la puerta del conductor o en la tapa de la gasolina.' },
+    { k: 'bateria', name: 'Batería', km: 0, months: 60 },
+  ];
+  const DOCS = [
+    { k: 'itv', name: 'ITV', tip: 'Con más de 10 años, el 206 pasa la ITV cada año.' },
+    { k: 'seguro', name: 'Seguro' },
+    { k: 'ivtm', name: 'Impuesto de circulación' },
+  ];
+  const car = Object.assign({ km: null, maint: {}, docs: {}, fills: [], tab: 'maint', applied: false }, store.get('car', {}));
+  const saveCar = () => store.set('car', car);
+  const todayISO = () => new Date().toISOString().slice(0, 10);
+  const kmFmt = n => Math.round(n).toLocaleString('es-ES') + ' km';
+  const dateFmt = iso => new Date(iso + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' });
+  const daysUntil = iso => Math.round((new Date(iso + 'T12:00:00') - new Date(todayISO() + 'T12:00:00')) / 864e5);
+  const addMonths = (iso, m) => { const d = new Date(iso + 'T12:00:00'); d.setMonth(d.getMonth() + m); return d.toISOString().slice(0, 10); };
+
+  // La primera vez, Vigía se ajusta al 206: gasolina 95 y su consumo.
+  if (!car.applied) {
+    S.fuel = CAR_SPEC.fuel;
+    if (S.consumption === DEFAULTS.consumption) S.consumption = CAR_SPEC.consumption;
+    saveS(); car.applied = true; saveCar();
+  }
+
+  function maintStatus(it) {
+    const last = car.maint[it.k];
+    if (!last || (!last.km && !last.date)) return { level: 'none', text: 'Sin apuntar', sub: 'Toca para apuntar la última vez' };
+    let kmLeft = null, daysLeft = null;
+    if (it.km && last.km != null && car.km != null) kmLeft = last.km + it.km - car.km;
+    if (it.months && last.date) daysLeft = daysUntil(addMonths(last.date, it.months));
+    const parts = [];
+    if (kmLeft != null) parts.push(kmLeft >= 0 ? `faltan ${kmFmt(kmLeft)}` : `pasado ${kmFmt(-kmLeft)}`);
+    if (daysLeft != null) parts.push(daysLeft >= 0 ? (daysLeft < 60 ? `${daysLeft} días` : `${Math.round(daysLeft / 30.4)} meses`) : `pasado ${Math.round(-daysLeft / 30.4) || 1} mes${Math.round(-daysLeft / 30.4) > 1 ? 'es' : ''}`);
+    const late = (kmLeft != null && kmLeft < 0) || (daysLeft != null && daysLeft < 0);
+    const soon = !late && ((kmLeft != null && kmLeft < 1500) || (daysLeft != null && daysLeft < 30));
+    const doneTxt = [last.km != null ? kmFmt(last.km) : '', last.date ? dateFmt(last.date) : ''].filter(Boolean).join(' · ');
+    return { level: late ? 'late' : soon ? 'soon' : 'ok', text: late ? 'Toca ya' : soon ? 'Pronto' : 'Al día',
+      sub: (parts.length ? parts.join(' · ') : 'Apunta los km actuales para calcularlo') + (doneTxt ? ` · última: ${doneTxt}` : '') };
+  }
+  function docStatus(d) {
+    const iso = car.docs[d.k];
+    if (!iso) return { level: 'none', text: 'Sin fecha', sub: 'Toca para poner la fecha' };
+    const n = daysUntil(iso);
+    return { level: n < 0 ? 'late' : n <= 30 ? 'soon' : 'ok', text: n < 0 ? 'Caducado' : n === 0 ? 'Hoy' : n <= 30 ? `${n} días` : 'Al día',
+      sub: `${n < 0 ? 'Caducó' : 'Vence'} el ${dateFmt(iso)}${n > 30 ? ` · ${n < 60 ? n + ' días' : Math.round(n / 30.4) + ' meses'}` : ''}` };
+  }
+
+  // Consumo real: de lleno a lleno.
+  function fuelStats() {
+    const f = car.fills.filter(x => x.km != null).sort((a, b) => a.km - b.km);
+    let realCons = null;
+    if (f.length >= 2) {
+      const liters = f.slice(1).reduce((a, x) => a + x.liters, 0), dist = f[f.length - 1].km - f[0].km;
+      if (dist > 50) realCons = liters / dist * 100;
+    }
+    const ym = todayISO().slice(0, 7);
+    const month = car.fills.filter(x => x.date.slice(0, 7) === ym);
+    const yr = car.fills.filter(x => x.date.slice(0, 4) === ym.slice(0, 4));
+    return { realCons, monthEur: month.reduce((a, x) => a + x.euros, 0), monthL: month.reduce((a, x) => a + x.liters, 0),
+      yearEur: yr.reduce((a, x) => a + x.euros, 0) };
+  }
+  function cheapestNear() {
+    if (!st.pos || !st.stations.length) return null;
+    const near = nearbyStations(st.pos.lat, st.pos.lon, 10000, CAR_SPEC.fuel);
+    if (!near.length) return null;
+    return near.reduce((a, b) => b.s.prices[CAR_SPEC.fuel] < a.s.prices[CAR_SPEC.fuel] ? b : a);
+  }
+
+  const lvlPill = s => `<span class="car-pill ${s.level}">${esc(s.text)}</span>`;
+  function carAlerts() {
+    const out = [];
+    for (const d of DOCS) { const s = docStatus(d); if (s.level === 'late' || s.level === 'soon') out.push({ name: d.name, s }); }
+    for (const it of MAINT) { const s = maintStatus(it); if (s.level === 'late' || s.level === 'soon') out.push({ name: it.name, s }); }
+    return out;
+  }
+
+  function carHtml() {
+    const tabs = [['maint', 'Revisiones'], ['fuel', 'Gasolina'], ['docs', 'Papeles'], ['info', 'Ficha']];
+    const alerts = carAlerts();
+    let html = `<div class="car-head">${ic('i-car')}<div><b>${CAR_SPEC.name}</b><div class="fine">${CAR_SPEC.sub}</div></div>
+      <button type="button" class="car-km" data-act="km"><small>Kilómetros</small><b>${car.km != null ? kmFmt(car.km) : 'Apuntar'}</b></button></div>
+      ${alerts.length ? `<div class="car-alert">${ic('i-alert')}<span>${alerts.slice(0, 3).map(a => `<b>${esc(a.name)}</b>: ${esc(a.s.text.toLowerCase())}`).join(' · ')}${alerts.length > 3 ? ` y ${alerts.length - 3} más` : ''}</span></div>` : ''}
+      <div class="seg" id="carTabs">${tabs.map(([k, l]) => `<button type="button" data-tab="${k}" aria-pressed="${car.tab === k}">${l}</button>`).join('')}</div>`;
+
+    if (car.tab === 'maint') {
+      html += `<div class="group">${MAINT.map(it => { const s = maintStatus(it); return `<button type="button" class="opt car-row" data-maint="${it.k}">
+        <span class="lbl">${esc(it.name)}<small>${esc(s.sub)}</small></span>${lvlPill(s)}</button>`; }).join('')}</div>
+        <p class="fine">Intervalos orientativos para el 1.4 de 75 CV. Si en el taller te dicen otros, manda lo que diga el taller.</p>`;
+    } else if (car.tab === 'fuel') {
+      const fs = fuelStats(), cheap = cheapestNear();
+      const p = cheap ? cheap.s.prices[CAR_SPEC.fuel] : null;
+      html += `<div class="car-stats">
+          <div><small>Consumo real</small><b>${fs.realCons ? fmt.liters(fs.realCons) : '—'}</b><small>${fs.realCons ? 'cada 100 km' : 'Apunta 2 repostajes con km'}</small></div>
+          <div><small>Este mes</small><b>${fmt.eur(fs.monthEur)}</b><small>${fmt.liters(fs.monthL)}</small></div>
+          <div><small>Este año</small><b>${fmt.eur(fs.yearEur)}</b><small>${car.fills.length} repostajes</small></div>
+        </div>
+        ${p ? `<button type="button" class="opt car-cheap" data-station="${esc(cheap.s.id)}"><span class="lbl">Llenar el depósito (${CAR_SPEC.tank} L): <b>${fmt.eur(p * CAR_SPEC.tank)}</b><small>${esc(V.brandName(cheap.s.brand))} a ${fmt.dist(cheap.d)} · ${fmt.price(p)} €/L, la más barata cerca</small></span></button>` : ''}
+        <div class="section-label">Apuntar repostaje</div>
+        <form id="fillForm" class="group car-form">
+          <label class="opt"><span class="lbl">Litros</span><input name="liters" type="number" inputmode="decimal" step="0.01" min="1" max="${CAR_SPEC.tank + 5}" required placeholder="35,2"></label>
+          <label class="opt"><span class="lbl">Total pagado (€)</span><input name="euros" type="number" inputmode="decimal" step="0.01" min="1" required placeholder="52,40"></label>
+          <label class="opt"><span class="lbl">Km del coche<small>Para calcular el consumo real</small></span><input name="km" type="number" inputmode="numeric" min="0" placeholder="${car.km ?? '185000'}"></label>
+          <label class="opt"><span class="lbl">Fecha</span><input name="date" type="date" value="${todayISO()}" required></label>
+        </form>
+        <button type="button" class="btn-grad" data-act="addFill">${ic('i-fuel')}Guardar repostaje</button>
+        <p class="fine">Llena el depósito hasta que salte la pistola cada vez: así el consumo real sale bien. Cuando lo tenga, Vigía lo usa para calcular lo que gastas en cada ruta.</p>
+        ${car.fills.length ? `<div class="section-label">Historial</div><div class="group">${car.fills.slice().sort((a, b) => b.date.localeCompare(a.date) || (b.km || 0) - (a.km || 0)).slice(0, 30).map(f => `
+          <div class="opt"><span class="lbl">${dateFmt(f.date)} · ${fmt.liters(f.liters)}<small>${fmt.price(f.euros / f.liters)} €/L${f.km != null ? ' · ' + kmFmt(f.km) : ''}</small></span><b>${fmt.eur(f.euros)}</b>
+          <button type="button" class="icon-plain car-del" data-delfill="${f.id}" aria-label="Borrar repostaje">${ic('i-x')}</button></div>`).join('')}</div>` : ''}`;
+    } else if (car.tab === 'docs') {
+      html += `<div class="group">${DOCS.map(d => { const s = docStatus(d); return `<button type="button" class="opt car-row" data-doc="${d.k}">
+        <span class="lbl">${esc(d.name)}<small>${esc(s.sub)}</small></span>${lvlPill(s)}</button>`; }).join('')}</div>
+        <p class="fine">Te avisaré al abrir Vigía cuando falte un mes o menos. Lleva en el coche el permiso de circulación, la ficha técnica con la ITV en vigor y el justificante del seguro.</p>`;
+    } else {
+      const fs = fuelStats();
+      const rows = [['Motor', CAR_SPEC.engine], ['Combustible', CAR_SPEC.fuelLabel], ['Depósito', `${CAR_SPEC.tank} L`],
+        ['Consumo para las rutas', fmt.liters(S.consumption) + ' / 100 km' + (fs.realCons ? ' (real)' : ' (aprox.)')],
+        ['Autonomía con el depósito lleno', `unos ${Math.round(CAR_SPEC.tank / S.consumption * 100 / 10) * 10} km`],
+        ['Aceite', CAR_SPEC.oil], ['Etiqueta DGT', CAR_SPEC.label], ['ITV', 'Cada año (tiene más de 10 años)']];
+      html += `<div class="group">${rows.map(([a, b]) => `<div class="opt"><span class="lbl">${a}</span><b class="car-val">${esc(b)}</b></div>`).join('')}</div>
+        <p class="fine">Datos orientativos de fábrica. Para el aceite y las presiones, manda el libro del coche o la pegatina de la puerta. Con etiqueta B puedes entrar en la mayoría de zonas de bajas emisiones, pero cada ciudad tiene sus normas.</p>`;
+    }
+    return html;
+  }
+
+  function openCar() {
+    openSheet('car', 'Mi coche', carHtml());
+    const body = $('#sheetBody');
+    body.onchange = null;
+    body.onclick = e => {
+      const t = e.target.closest('button');
+      if (!t) return;
+      if (t.dataset.tab) { car.tab = t.dataset.tab; saveCar(); return openCar(); }
+      if (t.dataset.act === 'km') return editKm();
+      if (t.dataset.maint) return editMaint(MAINT.find(x => x.k === t.dataset.maint));
+      if (t.dataset.doc) return editDoc(DOCS.find(x => x.k === t.dataset.doc));
+      if (t.dataset.station) return openStation(t.dataset.station);
+      if (t.dataset.delfill) {
+        const f = car.fills.find(x => x.id === t.dataset.delfill);
+        car.fills = car.fills.filter(x => x !== f); saveCar(); applyRealConsumption(); openCar();
+        toast('Repostaje borrado', { label: 'Deshacer', fn: () => { car.fills.push(f); saveCar(); applyRealConsumption(); openCar(); } });
+        return;
+      }
+      if (t.dataset.act === 'addFill') {
+        const form = $('#fillForm');
+        if (!form.reportValidity()) return;
+        const v = n => form.elements[n].value.trim().replace(',', '.');
+        const liters = +v('liters'), euros = +v('euros'), km = v('km') === '' ? null : Math.round(+v('km'));
+        if (km != null && car.km != null && km + 5000 < car.km) { toast('Esos km son menores que los del coche. Revísalos.'); return; }
+        car.fills.push({ id: Math.random().toString(36).slice(2, 9), date: v('date'), liters, euros, km });
+        if (km != null && (car.km == null || km > car.km)) car.km = km;
+        saveCar(); applyRealConsumption(); openCar();
+        toast(`Guardado: ${fmt.liters(liters)} a ${fmt.price(euros / liters)} €/L`);
+      }
+    };
+  }
+  function applyRealConsumption() {
+    const c = fuelStats().realCons;
+    if (c && c > 3 && c < 15) { S.consumption = Math.round(c * 10) / 10; saveS(); }
+  }
+
+  function subForm(title, html, onSave, extra) {
+    openSheet('car', title, `<form id="carSub" class="group car-form">${html}</form>
+      <div class="btns">${extra || ''}<button type="button" class="btn-grad" data-act="save">${ic('i-check')}Guardar</button></div>
+      <button type="button" class="link-btn" data-act="back">Volver a Mi coche</button>`);
+    const body = $('#sheetBody');
+    body.onclick = e => {
+      const t = e.target.closest('button');
+      if (!t) return;
+      const form = $('#carSub');
+      if (t.dataset.act === 'back') return openCar();
+      if (t.dataset.act === 'save') { if (!form.reportValidity()) return; onSave(form); saveCar(); openCar(); }
+      if (t.dataset.act === 'today') { if (form.elements.km && car.km != null) form.elements.km.value = car.km; if (form.elements.date) form.elements.date.value = todayISO(); }
+      if (t.dataset.act === 'clear') { onSave(null); saveCar(); openCar(); }
+    };
+  }
+  function editKm() {
+    subForm('Kilómetros del coche', `<label class="opt"><span class="lbl">Km que marca ahora<small>Míralo en el cuentakilómetros</small></span>
+      <input name="km" type="number" inputmode="numeric" min="0" max="999999" required value="${car.km ?? ''}" placeholder="185000"></label>`,
+      f => { car.km = Math.round(+f.elements.km.value); });
+  }
+  function editMaint(it) {
+    const last = car.maint[it.k] || {};
+    const every = [it.km ? kmFmt(it.km) : '', it.months ? (it.months % 12 ? it.months + ' meses' : (it.months / 12 === 1 ? '1 año' : it.months / 12 + ' años')) : ''].filter(Boolean).join(' o ');
+    subForm(it.name, `<div class="opt"><span class="lbl">Cada<small>${esc(it.tip || 'Lo que llegue antes')}</small></span><b class="car-val">${every}</b></div>
+      ${it.km ? `<label class="opt"><span class="lbl">Km cuando se hizo</span><input name="km" type="number" inputmode="numeric" min="0" value="${last.km ?? ''}" placeholder="${car.km ?? ''}"></label>` : ''}
+      <label class="opt"><span class="lbl">Fecha cuando se hizo</span><input name="date" type="date" value="${last.date || ''}" max="${todayISO()}"></label>`,
+      f => {
+        if (!f) { delete car.maint[it.k]; return; }
+        const km = f.elements.km && f.elements.km.value !== '' ? Math.round(+f.elements.km.value) : null;
+        const date = f.elements.date.value || null;
+        if (km == null && !date) { delete car.maint[it.k]; return; }
+        car.maint[it.k] = { km, date };
+        if (km != null && (car.km == null || km > car.km)) car.km = km;
+      },
+      `<button type="button" class="btn-ghost" data-act="today">Hecho hoy</button>${last.km != null || last.date ? '<button type="button" class="btn-ghost" data-act="clear">Borrar</button>' : ''}`);
+  }
+  function editDoc(d) {
+    subForm(d.name, `<label class="opt"><span class="lbl">Vence el<small>${esc(d.tip || 'Mira la fecha en el papel o en el recibo')}</small></span>
+      <input name="date" type="date" required value="${car.docs[d.k] || ''}"></label>`,
+      f => { if (!f) delete car.docs[d.k]; else car.docs[d.k] = f.elements.date.value; },
+      car.docs[d.k] ? '<button type="button" class="btn-ghost" data-act="clear">Borrar</button>' : '');
+  }
+  function carStartupNotice() {
+    const a = carAlerts();
+    if (!a.length) return;
+    notice(`Mi coche · ${a.slice(0, 2).map(x => `${x.name}: ${x.s.text.toLowerCase()}`).join(' · ')}${a.length > 2 ? ` y ${a.length - 2} más` : ''}. Tócalo en el botón del coche.`, 9000);
+  }
+
   // ---------- Botones ----------
   $('#searchBtn').addEventListener('click', openSearch);
   $('#clearBtn').addEventListener('click', () => clearRoute());
   $('#settingsBtn').addEventListener('click', openSettings);
   $('#gasBtn').addEventListener('click', openGas);
+  $('#carBtn').addEventListener('click', openCar);
   $('#reportBtn').addEventListener('click', openReport);
   $('#recenterBtn').addEventListener('click', () => {
     if (!fix) { toast('Todavía buscando tu ubicación…'); return; }
@@ -1865,6 +2094,7 @@
     keepAwake();
     $('#start').classList.add('leaving');
     setTimeout(() => { $('#start').hidden = true; }, 500);
+    setTimeout(carStartupNotice, 2500);
   });
 
   renderChips(); renderSearchBar(); renderSpeed(); setFollow(true);

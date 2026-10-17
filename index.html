@@ -17,7 +17,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
-<link href="styles.css" rel="stylesheet">
+<link href="styles.css?v=car1" rel="stylesheet">
 </head>
 <body>
 
@@ -130,6 +130,7 @@
       <button id="cheapPill" class="cheap glass" type="button" hidden></button>
       <div class="fab-col">
         <button id="recenterBtn" class="fab glass" type="button" aria-label="Centrar en mi posición"><svg><use href="#i-locate"/></svg></button>
+        <button id="carBtn" class="fab glass car" type="button" aria-label="Mi coche"><svg><use href="#i-car"/></svg></button>
         <button id="gasBtn" class="fab glass fuel" type="button" aria-label="Gasolineras"><svg><use href="#i-fuel"/></svg></button>
         <button id="voiceBtn" class="fab glass" type="button" aria-label="Voz" hidden><svg><use href="#i-vol"/></svg></button>
         <button id="reportBtn" class="fab fab-report" type="button" aria-label="Avisar de un radar"><svg><use href="#i-alert"/></svg></button>
@@ -183,7 +184,7 @@
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="logic.js"></script>
-<script src="app.js"></script>
+<script src="logic.js?v=car1"></script>
+<script src="app.js?v=car1"></script>
 </body>
 </html>
