@@ -1750,7 +1750,7 @@
     if (k === 'mapStyle') map.setStyle(STYLES[S.mapStyle]);
     if (k === 'layer') { renderChips(); drawRadars(); drawStations(); }
     if (k === 'showGone') drawRadars();
-    if (k === 'fuel') { drawStations(); renderCheap(); }
+    if (k === 'fuel') { car.profile.fuel = S.fuel; saveCar(); drawStations(); renderCheap(); }
     if (k === 'silentOverride') applyAudioSession();
   }
 
@@ -1805,7 +1805,7 @@
       </div>
       <div class="section-label">Mi coche</div>
       <div class="group">
-        <button type="button" class="opt car-row" data-act="car">${ic('i-car')}<span class="lbl">${CAR_SPEC.name} ${CAR_SPEC.sub}<small>Revisiones, gasolina y papeles</small></span><span class="chev">›</span></button>
+        <button type="button" class="opt car-row" data-act="car">${ic('i-car')}<span class="lbl">${esc(carName())}<small>${esc(carSub())} · revisiones, gasolina y papeles</small></span><span class="chev">›</span></button>
         ${sel('fuel', 'Combustible', V.FUELS.map(f => [f.key, f.label]))}
         <div class="opt"><span class="lbl">Consumo medio<small>Litros cada 100 km</small></span>
           <div class="stepper"><button type="button" data-step="-0.1" aria-label="Menos">−</button><b id="consVal">${fmt.liters(S.consumption)}</b><button type="button" data-step="0.1" aria-label="Más">+</button></div></div>
@@ -1840,45 +1840,94 @@
   }
 
   // ---------- Mi coche ----------
-  // Peugeot 206 1.4 75 CV (2002). Intervalos orientativos: si tu taller o el libro de mantenimiento dicen otra cosa, cámbialos.
-  const CAR_SPEC = {
-    name: 'Peugeot 206', sub: '1.4 · 75 CV · 2002', engine: '1.4 de 8 válvulas (1.360 cc), 75 CV',
-    fuel: 'g95', fuelLabel: 'Gasolina 95', tank: 50, consumption: 6.8, label: 'B (verde)',
-    oil: 'Unos 3 L con filtro · 10W-40 o 5W-40',
+  // Ficha editable (marca, modelo, año…). Por defecto, el Peugeot 206 1.4 de 2002.
+  // Intervalos de mantenimiento orientativos: si el taller o el libro del coche dicen otra cosa, manda eso.
+  const CAR_DEFAULT = {
+    brand: 'Peugeot', model: '206', year: 2002, version: '1.4 75 CV', cc: 1360, hp: 75,
+    fuel: 'g95', tank: 50, consumption: 6.8, plate: '3856CCG', label: 'B', oil: 'Unos 3 L con filtro · 10W-40 o 5W-40',
   };
-  const MAINT = [
-    { k: 'aceite', name: 'Aceite y filtro de aceite', km: 15000, months: 12, tip: CAR_SPEC.oil },
-    { k: 'aire', name: 'Filtro de aire', km: 30000, months: 24 },
-    { k: 'polen', name: 'Filtro de habitáculo (polen)', km: 15000, months: 12 },
-    { k: 'gasolina', name: 'Filtro de gasolina', km: 60000, months: 48 },
-    { k: 'bujias', name: 'Bujías', km: 30000, months: 36 },
-    { k: 'distribucion', name: 'Correa de distribución y bomba de agua', km: 80000, months: 60, tip: 'Si se rompe, el motor se estropea. Mejor no apurarla.' },
-    { k: 'accesorios', name: 'Correa de accesorios', km: 80000, months: 60 },
-    { k: 'liqfrenos', name: 'Líquido de frenos', km: 0, months: 24 },
-    { k: 'refrigerante', name: 'Anticongelante', km: 0, months: 48 },
-    { k: 'pastillas', name: 'Pastillas de freno (revisar)', km: 20000, months: 24 },
-    { k: 'neumaticos', name: 'Neumáticos', km: 40000, months: 72, tip: 'Revisa la presión una vez al mes. La correcta está en la pegatina de la puerta del conductor o en la tapa de la gasolina.' },
-    { k: 'bateria', name: 'Batería', km: 0, months: 60 },
-  ];
+  const BRANDS = ['Abarth', 'Alfa Romeo', 'Audi', 'BMW', 'BYD', 'Citroën', 'Cupra', 'Dacia', 'DS', 'Fiat', 'Ford', 'Honda', 'Hyundai',
+    'Jaguar', 'Jeep', 'Kia', 'Land Rover', 'Lexus', 'Mazda', 'Mercedes-Benz', 'MG', 'Mini', 'Mitsubishi', 'Nissan', 'Opel', 'Peugeot',
+    'Porsche', 'Renault', 'Seat', 'Škoda', 'Smart', 'SsangYong', 'Subaru', 'Suzuki', 'Tesla', 'Toyota', 'Volkswagen', 'Volvo'];
+  const LABELS = [['0', '0 (azul)'], ['ECO', 'ECO'], ['C', 'C (verde)'], ['B', 'B (amarilla)'], ['none', 'Sin etiqueta']];
+  const DGT = {
+    label: p => `https://sede.dgt.gob.es/es/vehiculos/informacion-de-vehiculos/distintivo-ambiental/index.html?matricula=${encodeURIComponent(p)}`,
+    report: 'https://sede.dgt.gob.es/es/vehiculos/informacion-de-vehiculos/informe-de-un-vehiculo/',
+  };
+
+  const car = Object.assign({ km: null, maint: {}, docs: {}, fills: [], itvs: [], reports: [], tab: 'maint', applied: false }, store.get('car', {}));
+  car.profile = Object.assign({}, CAR_DEFAULT, car.profile || {});
+  car.itvs = car.itvs || []; car.reports = car.reports || [];
+  const saveCar = () => store.set('car', car);
+  const P = () => car.profile;
+  const isDiesel = () => P().fuel.startsWith('diesel');
+  const fuelLabel = k => (V.FUELS.find(f => f.key === k) || {}).label || k;
+  const carName = () => [P().brand, P().model].filter(Boolean).join(' ') || 'Mi coche';
+  const carSub = () => [P().version, P().year].filter(Boolean).join(' · ');
+  const carAge = () => P().year ? new Date().getFullYear() - P().year : null;
+  const itvEveryMonths = () => { const a = carAge(); return a == null ? 12 : a < 4 ? 48 : a <= 10 ? 24 : 12; };
+  const itvText = () => { const a = carAge(); return a == null ? 'Según la antigüedad' : a < 4 ? 'La primera a los 4 años' : a <= 10 ? 'Cada 2 años' : 'Cada año (tiene más de 10 años)'; };
+  const labelText = () => (LABELS.find(l => l[0] === P().label) || [0, 'Sin indicar'])[1];
+
+  function maintList() {
+    return [
+      { k: 'aceite', name: 'Aceite y filtro de aceite', km: isDiesel() ? 20000 : 15000, months: 12, tip: P().oil || 'Mira el aceite recomendado en el libro del coche' },
+      { k: 'aire', name: 'Filtro de aire', km: 30000, months: 24 },
+      { k: 'polen', name: 'Filtro de habitáculo (polen)', km: 15000, months: 12 },
+      { k: 'gasolina', name: isDiesel() ? 'Filtro de gasoil' : 'Filtro de gasolina', km: isDiesel() ? 40000 : 60000, months: 48 },
+      ...(isDiesel() ? [] : [{ k: 'bujias', name: 'Bujías', km: 30000, months: 36 }]),
+      { k: 'distribucion', name: 'Correa de distribución y bomba de agua', km: 80000, months: 60, tip: 'Si se rompe, el motor se estropea. Mejor no apurarla. Si tu motor lleva cadena, no hace falta.' },
+      { k: 'accesorios', name: 'Correa de accesorios', km: 80000, months: 60 },
+      { k: 'liqfrenos', name: 'Líquido de frenos', km: 0, months: 24 },
+      { k: 'refrigerante', name: 'Anticongelante', km: 0, months: 48 },
+      { k: 'pastillas', name: 'Pastillas de freno (revisar)', km: 20000, months: 24 },
+      { k: 'neumaticos', name: 'Neumáticos', km: 40000, months: 72, tip: 'Revisa la presión una vez al mes. La correcta está en la pegatina de la puerta del conductor o en la tapa del depósito.' },
+      { k: 'bateria', name: 'Batería', km: 0, months: 60 },
+    ];
+  }
   const DOCS = [
-    { k: 'itv', name: 'ITV', tip: 'Con más de 10 años, el 206 pasa la ITV cada año.' },
+    { k: 'itv', name: 'ITV' },
     { k: 'seguro', name: 'Seguro' },
     { k: 'ivtm', name: 'Impuesto de circulación' },
   ];
-  const car = Object.assign({ km: null, maint: {}, docs: {}, fills: [], tab: 'maint', applied: false }, store.get('car', {}));
-  const saveCar = () => store.set('car', car);
   const todayISO = () => new Date().toISOString().slice(0, 10);
   const kmFmt = n => Math.round(n).toLocaleString('es-ES') + ' km';
   const dateFmt = iso => new Date(iso + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' });
   const daysUntil = iso => Math.round((new Date(iso + 'T12:00:00') - new Date(todayISO() + 'T12:00:00')) / 864e5);
   const addMonths = (iso, m) => { const d = new Date(iso + 'T12:00:00'); d.setMonth(d.getMonth() + m); return d.toISOString().slice(0, 10); };
+  const newId = () => Math.random().toString(36).slice(2, 9);
 
-  // La primera vez, Vigía se ajusta al 206: gasolina 95 y su consumo.
-  if (!car.applied) {
-    S.fuel = CAR_SPEC.fuel;
-    if (S.consumption === DEFAULTS.consumption) S.consumption = CAR_SPEC.consumption;
-    saveS(); car.applied = true; saveCar();
+  // Vigía usa el combustible y el consumo de tu coche para las gasolineras y el gasto de cada ruta.
+  function applyCarToVigia() {
+    const fuelChanged = S.fuel !== P().fuel;
+    S.fuel = P().fuel;
+    if (!fuelStats().realCons) S.consumption = P().consumption;
+    saveS();
+    if (fuelChanged) { drawStations(); renderCheap(); }
   }
+  if (!car.applied) { car.applied = true; saveCar(); S.fuel = P().fuel; if (S.consumption === DEFAULTS.consumption) S.consumption = P().consumption; saveS(); }
+
+  // ---- Archivos (informes de la DGT en PDF): se guardan dentro de la app, en este iPhone ----
+  const Files = {
+    db: null,
+    open() {
+      if (this.db) return Promise.resolve(this.db);
+      return new Promise((res, rej) => {
+        const r = indexedDB.open('vigia-coche', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('files', { keyPath: 'id' });
+        r.onsuccess = () => { this.db = r.result; res(this.db); };
+        r.onerror = () => rej(r.error);
+      });
+    },
+    async run(mode, fn) {
+      const db = await this.open();
+      return new Promise((res, rej) => { const t = db.transaction('files', mode); const q = fn(t.objectStore('files')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); });
+    },
+    put: rec => Files.run('readwrite', s => s.put(rec)),
+    get: id => Files.run('readonly', s => s.get(id)),
+    del: id => Files.run('readwrite', s => s.delete(id)),
+  };
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
   function maintStatus(it) {
     const last = car.maint[it.k];
@@ -1888,7 +1937,7 @@
     if (it.months && last.date) daysLeft = daysUntil(addMonths(last.date, it.months));
     const parts = [];
     if (kmLeft != null) parts.push(kmLeft >= 0 ? `faltan ${kmFmt(kmLeft)}` : `pasado ${kmFmt(-kmLeft)}`);
-    if (daysLeft != null) parts.push(daysLeft >= 0 ? (daysLeft < 60 ? `${daysLeft} días` : `${Math.round(daysLeft / 30.4)} meses`) : `pasado ${Math.round(-daysLeft / 30.4) || 1} mes${Math.round(-daysLeft / 30.4) > 1 ? 'es' : ''}`);
+    if (daysLeft != null) { const m = Math.round(Math.abs(daysLeft) / 30.4) || 1; parts.push(daysLeft >= 0 ? (daysLeft < 60 ? `${daysLeft} días` : `${Math.round(daysLeft / 30.4)} meses`) : `pasado ${m} mes${m > 1 ? 'es' : ''}`); }
     const late = (kmLeft != null && kmLeft < 0) || (daysLeft != null && daysLeft < 0);
     const soon = !late && ((kmLeft != null && kmLeft < 1500) || (daysLeft != null && daysLeft < 30));
     const doneTxt = [last.km != null ? kmFmt(last.km) : '', last.date ? dateFmt(last.date) : ''].filter(Boolean).join(' · ');
@@ -1919,43 +1968,44 @@
   }
   function cheapestNear() {
     if (!st.pos || !st.stations.length) return null;
-    const near = nearbyStations(st.pos.lat, st.pos.lon, 10000, CAR_SPEC.fuel);
+    const near = nearbyStations(st.pos.lat, st.pos.lon, 10000, P().fuel);
     if (!near.length) return null;
-    return near.reduce((a, b) => b.s.prices[CAR_SPEC.fuel] < a.s.prices[CAR_SPEC.fuel] ? b : a);
+    return near.reduce((a, b) => b.s.prices[P().fuel] < a.s.prices[P().fuel] ? b : a);
   }
 
   const lvlPill = s => `<span class="car-pill ${s.level}">${esc(s.text)}</span>`;
   function carAlerts() {
     const out = [];
     for (const d of DOCS) { const s = docStatus(d); if (s.level === 'late' || s.level === 'soon') out.push({ name: d.name, s }); }
-    for (const it of MAINT) { const s = maintStatus(it); if (s.level === 'late' || s.level === 'soon') out.push({ name: it.name, s }); }
+    for (const it of maintList()) { const s = maintStatus(it); if (s.level === 'late' || s.level === 'soon') out.push({ name: it.name, s }); }
     return out;
   }
+  const extLink = (href, label, icon = 'i-search') => `<a class="opt car-row car-link" href="${esc(href)}" target="_blank" rel="noopener">${ic(icon)}<span class="lbl">${label}</span><span class="chev">↗</span></a>`;
 
   function carHtml() {
     const tabs = [['maint', 'Revisiones'], ['fuel', 'Gasolina'], ['docs', 'Papeles'], ['info', 'Ficha']];
     const alerts = carAlerts();
-    let html = `<div class="car-head">${ic('i-car')}<div><b>${CAR_SPEC.name}</b><div class="fine">${CAR_SPEC.sub}</div></div>
+    let html = `<div class="car-head">${ic('i-car')}<div><b>${esc(carName())}</b><div class="fine">${esc(carSub())}${P().plate ? ` · ${esc(P().plate)}` : ''}</div></div>
       <button type="button" class="car-km" data-act="km"><small>Kilómetros</small><b>${car.km != null ? kmFmt(car.km) : 'Apuntar'}</b></button></div>
       ${alerts.length ? `<div class="car-alert">${ic('i-alert')}<span>${alerts.slice(0, 3).map(a => `<b>${esc(a.name)}</b>: ${esc(a.s.text.toLowerCase())}`).join(' · ')}${alerts.length > 3 ? ` y ${alerts.length - 3} más` : ''}</span></div>` : ''}
       <div class="seg" id="carTabs">${tabs.map(([k, l]) => `<button type="button" data-tab="${k}" aria-pressed="${car.tab === k}">${l}</button>`).join('')}</div>`;
 
     if (car.tab === 'maint') {
-      html += `<div class="group">${MAINT.map(it => { const s = maintStatus(it); return `<button type="button" class="opt car-row" data-maint="${it.k}">
+      html += `<div class="group">${maintList().map(it => { const s = maintStatus(it); return `<button type="button" class="opt car-row" data-maint="${it.k}">
         <span class="lbl">${esc(it.name)}<small>${esc(s.sub)}</small></span>${lvlPill(s)}</button>`; }).join('')}</div>
-        <p class="fine">Intervalos orientativos para el 1.4 de 75 CV. Si en el taller te dicen otros, manda lo que diga el taller.</p>`;
+        <p class="fine">Intervalos orientativos para un coche ${isDiesel() ? 'diésel' : 'de gasolina'}. Si en el taller o en el libro del coche pone otra cosa, manda eso.</p>`;
     } else if (car.tab === 'fuel') {
       const fs = fuelStats(), cheap = cheapestNear();
-      const p = cheap ? cheap.s.prices[CAR_SPEC.fuel] : null;
+      const p = cheap ? cheap.s.prices[P().fuel] : null;
       html += `<div class="car-stats">
           <div><small>Consumo real</small><b>${fs.realCons ? fmt.liters(fs.realCons) : '—'}</b><small>${fs.realCons ? 'cada 100 km' : 'Apunta 2 repostajes con km'}</small></div>
           <div><small>Este mes</small><b>${fmt.eur(fs.monthEur)}</b><small>${fmt.liters(fs.monthL)}</small></div>
           <div><small>Este año</small><b>${fmt.eur(fs.yearEur)}</b><small>${car.fills.length} repostajes</small></div>
         </div>
-        ${p ? `<button type="button" class="opt car-cheap" data-station="${esc(cheap.s.id)}"><span class="lbl">Llenar el depósito (${CAR_SPEC.tank} L): <b>${fmt.eur(p * CAR_SPEC.tank)}</b><small>${esc(V.brandName(cheap.s.brand))} a ${fmt.dist(cheap.d)} · ${fmt.price(p)} €/L, la más barata cerca</small></span></button>` : ''}
+        ${p ? `<button type="button" class="opt car-cheap" data-station="${esc(cheap.s.id)}"><span class="lbl">Llenar el depósito (${P().tank} L): <b>${fmt.eur(p * P().tank)}</b><small>${esc(V.brandName(cheap.s.brand))} a ${fmt.dist(cheap.d)} · ${fmt.price(p)} €/L de ${esc(fuelLabel(P().fuel))}, la más barata cerca</small></span></button>` : ''}
         <div class="section-label">Apuntar repostaje</div>
         <form id="fillForm" class="group car-form">
-          <label class="opt"><span class="lbl">Litros</span><input name="liters" type="number" inputmode="decimal" step="0.01" min="1" max="${CAR_SPEC.tank + 5}" required placeholder="35,2"></label>
+          <label class="opt"><span class="lbl">Litros</span><input name="liters" type="number" inputmode="decimal" step="0.01" min="1" max="${(P().tank || 80) + 10}" required placeholder="35,2"></label>
           <label class="opt"><span class="lbl">Total pagado (€)</span><input name="euros" type="number" inputmode="decimal" step="0.01" min="1" required placeholder="52,40"></label>
           <label class="opt"><span class="lbl">Km del coche<small>Para calcular el consumo real</small></span><input name="km" type="number" inputmode="numeric" min="0" placeholder="${car.km ?? '185000'}"></label>
           <label class="opt"><span class="lbl">Fecha</span><input name="date" type="date" value="${todayISO()}" required></label>
@@ -1966,17 +2016,45 @@
           <div class="opt"><span class="lbl">${dateFmt(f.date)} · ${fmt.liters(f.liters)}<small>${fmt.price(f.euros / f.liters)} €/L${f.km != null ? ' · ' + kmFmt(f.km) : ''}</small></span><b>${fmt.eur(f.euros)}</b>
           <button type="button" class="icon-plain car-del" data-delfill="${f.id}" aria-label="Borrar repostaje">${ic('i-x')}</button></div>`).join('')}</div>` : ''}`;
     } else if (car.tab === 'docs') {
+      const itvs = car.itvs.slice().sort((a, b) => b.date.localeCompare(a.date));
       html += `<div class="group">${DOCS.map(d => { const s = docStatus(d); return `<button type="button" class="opt car-row" data-doc="${d.k}">
         <span class="lbl">${esc(d.name)}<small>${esc(s.sub)}</small></span>${lvlPill(s)}</button>`; }).join('')}</div>
-        <p class="fine">Te avisaré al abrir Vigía cuando falte un mes o menos. Lleva en el coche el permiso de circulación, la ficha técnica con la ITV en vigor y el justificante del seguro.</p>`;
+        <p class="fine">ITV: ${esc(itvText().toLowerCase())}. Te avisaré al abrir Vigía cuando falte un mes o menos.</p>
+
+        <div class="section-label">Historial de ITV</div>
+        <div class="group">
+          ${itvs.map(x => `<div class="opt"><span class="lbl">${dateFmt(x.date)}${x.km != null ? ' · ' + kmFmt(x.km) : ''}<small>${esc(x.result)}${x.note ? ' · ' + esc(x.note) : ''}</small></span>
+            <span class="car-pill ${x.result === 'Favorable' ? 'ok' : x.result === 'Desfavorable' ? 'soon' : 'late'}">${esc(x.result)}</span>
+            <button type="button" class="icon-plain car-del" data-delitv="${x.id}" aria-label="Borrar inspección">${ic('i-x')}</button></div>`).join('')}
+          <button type="button" class="opt car-row" data-act="addItv">${ic('i-check')}<span class="lbl">Añadir una inspección<small>Fecha, km y resultado. Están en el informe de la DGT y en la tarjeta ITV.</small></span><span class="chev">›</span></button>
+        </div>
+
+        <div class="section-label">Informe de la DGT</div>
+        <div class="group">
+          ${car.reports.map(r => `<div class="opt"><span class="lbl">${esc(r.name)}<small>Añadido el ${dateFmt(r.date)} · ${(r.size / 1024).toFixed(0)} KB</small></span>
+            <button type="button" class="btn-ghost small" data-openrep="${r.id}">Ver</button>
+            <button type="button" class="icon-plain car-del" data-delrep="${r.id}" aria-label="Borrar informe">${ic('i-x')}</button></div>`).join('')}
+          <label class="opt car-row car-file">${ic('i-down')}<span class="lbl">${car.reports.length ? 'Añadir otro informe (PDF)' : 'Añadir el informe (PDF)'}<small>Se guarda dentro de Vigía, en este iPhone</small></span><input type="file" id="repFile" accept="application/pdf,.pdf"></label>
+          ${extLink(DGT.report, 'Pedir el informe en la DGT<small>Completo: tasa de 8,67 €. Reducido: gratis</small>', 'i-euro')}
+        </div>
+        <p class="fine">El informe es una foto del coche el día que lo pides: no se actualiza solo. Lo que apuntes aquí (ITV, km) se queda guardado.</p>`;
     } else {
-      const fs = fuelStats();
-      const rows = [['Motor', CAR_SPEC.engine], ['Combustible', CAR_SPEC.fuelLabel], ['Depósito', `${CAR_SPEC.tank} L`],
+      const fs = fuelStats(), pr = P();
+      const rows = [['Marca y modelo', carName()], ['Versión', pr.version || '—'], ['Año', pr.year || '—'], ['Matrícula', pr.plate || '—'],
+        ['Motor', [pr.cc ? pr.cc.toLocaleString('es-ES') + ' cc' : '', pr.hp ? pr.hp + ' CV' : ''].filter(Boolean).join(' · ') || '—'],
+        ['Combustible', fuelLabel(pr.fuel)], ['Depósito', pr.tank ? `${pr.tank} L` : '—'],
         ['Consumo para las rutas', fmt.liters(S.consumption) + ' / 100 km' + (fs.realCons ? ' (real)' : ' (aprox.)')],
-        ['Autonomía con el depósito lleno', `unos ${Math.round(CAR_SPEC.tank / S.consumption * 100 / 10) * 10} km`],
-        ['Aceite', CAR_SPEC.oil], ['Etiqueta DGT', CAR_SPEC.label], ['ITV', 'Cada año (tiene más de 10 años)']];
-      html += `<div class="group">${rows.map(([a, b]) => `<div class="opt"><span class="lbl">${a}</span><b class="car-val">${esc(b)}</b></div>`).join('')}</div>
-        <p class="fine">Datos orientativos de fábrica. Para el aceite y las presiones, manda el libro del coche o la pegatina de la puerta. Con etiqueta B puedes entrar en la mayoría de zonas de bajas emisiones, pero cada ciudad tiene sus normas.</p>`;
+        ['Autonomía con el depósito lleno', pr.tank ? `unos ${Math.round(pr.tank / S.consumption * 100 / 10) * 10} km` : '—'],
+        ['Aceite', pr.oil || '—'], ['Etiqueta DGT', labelText()], ['ITV', itvText()]];
+      html += `<button type="button" class="btn-grad" data-act="editCar">${ic('i-sliders')}Cambiar coche o editar datos</button>
+        <div class="group">${rows.map(([a, b]) => `<div class="opt"><span class="lbl">${a}</span><b class="car-val">${esc(String(b))}</b></div>`).join('')}</div>
+        ${pr.plate ? `<div class="group">${extLink(DGT.label(pr.plate), `Comprobar la etiqueta en la DGT<small>Con la matrícula ${esc(pr.plate)}. Gratis</small>`)}</div>` : ''}
+        <div class="section-label">Copia de seguridad</div>
+        <div class="group">
+          <button type="button" class="opt car-row" data-act="export">${ic('i-down')}<span class="lbl">Guardar copia<small>Ficha, revisiones, repostajes, papeles e ITV. Guárdala en Archivos</small></span><span class="chev">›</span></button>
+          <label class="opt car-row car-file">${ic('i-up')}<span class="lbl">Recuperar una copia<small>Si borras Vigía o cambias de iPhone</small></span><input type="file" id="impFile" accept="application/json,.json"></label>
+        </div>
+        <p class="fine">Datos orientativos. Para el aceite y las presiones, manda el libro del coche o la pegatina de la puerta.</p>`;
     }
     return html;
   }
@@ -1984,15 +2062,34 @@
   function openCar() {
     openSheet('car', 'Mi coche', carHtml());
     const body = $('#sheetBody');
-    body.onchange = null;
-    body.onclick = e => {
+    body.onchange = async e => {
+      if (e.target.id === 'repFile' && e.target.files[0]) return addReport(e.target.files[0]);
+      if (e.target.id === 'impFile' && e.target.files[0]) return importCar(e.target.files[0]);
+    };
+    body.onclick = async e => {
       const t = e.target.closest('button');
       if (!t) return;
       if (t.dataset.tab) { car.tab = t.dataset.tab; saveCar(); return openCar(); }
       if (t.dataset.act === 'km') return editKm();
-      if (t.dataset.maint) return editMaint(MAINT.find(x => x.k === t.dataset.maint));
+      if (t.dataset.act === 'editCar') return editCar();
+      if (t.dataset.act === 'addItv') return addItv();
+      if (t.dataset.act === 'export') return exportCar();
+      if (t.dataset.maint) return editMaint(maintList().find(x => x.k === t.dataset.maint));
       if (t.dataset.doc) return editDoc(DOCS.find(x => x.k === t.dataset.doc));
       if (t.dataset.station) return openStation(t.dataset.station);
+      if (t.dataset.openrep) return openReport(t.dataset.openrep);
+      if (t.dataset.delrep) {
+        const r = car.reports.find(x => x.id === t.dataset.delrep);
+        if (!confirm(`¿Borrar «${r.name}» de Vigía?`)) return;
+        car.reports = car.reports.filter(x => x !== r); saveCar(); Files.del(r.id).catch(() => {}); openCar(); toast('Informe borrado');
+        return;
+      }
+      if (t.dataset.delitv) {
+        const x = car.itvs.find(i => i.id === t.dataset.delitv);
+        car.itvs = car.itvs.filter(i => i !== x); saveCar(); openCar();
+        toast('Inspección borrada', { label: 'Deshacer', fn: () => { car.itvs.push(x); saveCar(); openCar(); } });
+        return;
+      }
       if (t.dataset.delfill) {
         const f = car.fills.find(x => x.id === t.dataset.delfill);
         car.fills = car.fills.filter(x => x !== f); saveCar(); applyRealConsumption(); openCar();
@@ -2005,7 +2102,7 @@
         const v = n => form.elements[n].value.trim().replace(',', '.');
         const liters = +v('liters'), euros = +v('euros'), km = v('km') === '' ? null : Math.round(+v('km'));
         if (km != null && car.km != null && km + 5000 < car.km) { toast('Esos km son menores que los del coche. Revísalos.'); return; }
-        car.fills.push({ id: Math.random().toString(36).slice(2, 9), date: v('date'), liters, euros, km });
+        car.fills.push({ id: newId(), date: v('date'), liters, euros, km });
         if (km != null && (car.km == null || km > car.km)) car.km = km;
         saveCar(); applyRealConsumption(); openCar();
         toast(`Guardado: ${fmt.liters(liters)} a ${fmt.price(euros / liters)} €/L`);
@@ -2014,28 +2111,129 @@
   }
   function applyRealConsumption() {
     const c = fuelStats().realCons;
-    if (c && c > 3 && c < 15) { S.consumption = Math.round(c * 10) / 10; saveS(); }
+    S.consumption = c && c > 2 && c < 25 ? Math.round(c * 10) / 10 : P().consumption; saveS();
   }
 
+  // ---- Informes PDF ----
+  async function addReport(file) {
+    if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('Elige un archivo PDF'); return; }
+    if (file.size > 25 * 1048576) { toast('El PDF es demasiado grande (máx. 25 MB)'); return; }
+    const rec = { id: 'rep-' + newId(), name: file.name.replace(/\.pdf$/i, '') || 'Informe DGT', date: todayISO(), size: file.size };
+    try {
+      await Files.put({ id: rec.id, blob: file, type: 'application/pdf' });
+      car.reports.push(rec); saveCar(); openCar();
+      toast('Informe guardado. Pasa los datos de ITV a «Historial de ITV»');
+    } catch { toast('No se pudo guardar el PDF en este iPhone'); }
+  }
+  async function openReport(id) {
+    try {
+      const f = await Files.get(id);
+      if (!f) { toast('Este informe ya no está guardado en este iPhone'); return; }
+      const url = URL.createObjectURL(new Blob([f.blob], { type: 'application/pdf' }));
+      const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch { toast('No se pudo abrir el informe'); }
+  }
+
+  // ---- Copia de seguridad (sin los PDF, que pesan mucho) ----
+  function exportCar() {
+    const data = { app: 'vigia-coche', v: 2, at: new Date().toISOString(), car: { ...car, reports: [] }, consumption: S.consumption };
+    const blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    a.download = `vigia-${(P().model || 'coche').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${todayISO()}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast('Copia creada. Guárdala en Archivos');
+  }
+  async function importCar(file) {
+    try {
+      const d = JSON.parse(await file.text());
+      if (d.app !== 'vigia-coche' || !d.car) throw 0;
+      if (!confirm('Se sustituirán los datos del coche de este iPhone por los de la copia. ¿Seguir?')) return;
+      const keepReports = car.reports;
+      Object.keys(car).forEach(k => delete car[k]);
+      Object.assign(car, { km: null, maint: {}, docs: {}, fills: [], itvs: [], tab: 'info', applied: true }, d.car, { reports: keepReports });
+      car.profile = Object.assign({}, CAR_DEFAULT, car.profile || {});
+      saveCar(); applyCarToVigia(); applyRealConsumption(); openCar();
+      toast('Copia recuperada');
+    } catch { toast('Ese archivo no es una copia de Vigía'); }
+  }
+
+  // ---- Formularios ----
   function subForm(title, html, onSave, extra) {
     openSheet('car', title, `<form id="carSub" class="group car-form">${html}</form>
       <div class="btns">${extra || ''}<button type="button" class="btn-grad" data-act="save">${ic('i-check')}Guardar</button></div>
       <button type="button" class="link-btn" data-act="back">Volver a Mi coche</button>`);
     const body = $('#sheetBody');
+    body.onchange = null;
     body.onclick = e => {
       const t = e.target.closest('button');
       if (!t) return;
       const form = $('#carSub');
       if (t.dataset.act === 'back') return openCar();
-      if (t.dataset.act === 'save') { if (!form.reportValidity()) return; onSave(form); saveCar(); openCar(); }
+      if (t.dataset.act === 'save') { if (!form.reportValidity()) return; if (onSave(form) === false) return; saveCar(); openCar(); }
       if (t.dataset.act === 'today') { if (form.elements.km && car.km != null) form.elements.km.value = car.km; if (form.elements.date) form.elements.date.value = todayISO(); }
       if (t.dataset.act === 'clear') { onSave(null); saveCar(); openCar(); }
     };
+  }
+  const num = (f, n) => { const v = f.elements[n].value.trim().replace(',', '.'); return v === '' ? null : +v; };
+
+  function editCar() {
+    const p = P(), y = new Date().getFullYear();
+    subForm('Tu coche', `
+      <label class="opt"><span class="lbl">Marca</span><input name="brand" list="carBrands" required maxlength="30" value="${esc(p.brand)}" placeholder="Seat"></label>
+      <datalist id="carBrands">${BRANDS.map(b => `<option value="${esc(b)}">`).join('')}</datalist>
+      <label class="opt"><span class="lbl">Modelo</span><input name="model" required maxlength="30" value="${esc(p.model)}" placeholder="Ibiza"></label>
+      <label class="opt"><span class="lbl">Año</span><input name="year" type="number" inputmode="numeric" min="1950" max="${y + 1}" value="${p.year ?? ''}" placeholder="2015"></label>
+      <label class="opt"><span class="lbl">Versión<small>Motor y potencia, como lo conoces</small></span><input name="version" maxlength="40" value="${esc(p.version)}" placeholder="1.0 TSI 95 CV"></label>
+      <label class="opt"><span class="lbl">Cilindrada (cc)</span><input name="cc" type="number" inputmode="numeric" min="0" max="9000" value="${p.cc ?? ''}" placeholder="1360"></label>
+      <label class="opt"><span class="lbl">Potencia (CV)</span><input name="hp" type="number" inputmode="numeric" min="0" max="2000" value="${p.hp ?? ''}" placeholder="75"></label>
+      <label class="opt"><span class="lbl">Combustible</span><select name="fuel">${V.FUELS.map(f => `<option value="${f.key}" ${f.key === p.fuel ? 'selected' : ''}>${f.label}</option>`).join('')}</select></label>
+      <label class="opt"><span class="lbl">Depósito (litros)</span><input name="tank" type="number" inputmode="decimal" min="10" max="200" value="${p.tank ?? ''}" placeholder="50"></label>
+      <label class="opt"><span class="lbl">Consumo medio<small>Litros cada 100 km. Si apuntas repostajes, se usa el real</small></span><input name="consumption" type="number" inputmode="decimal" step="0.1" min="2" max="25" required value="${p.consumption}" placeholder="6,5"></label>
+      <label class="opt"><span class="lbl">Matrícula</span><input name="plate" maxlength="10" autocapitalize="characters" value="${esc(p.plate)}" placeholder="1234ABC"></label>
+      <label class="opt"><span class="lbl">Etiqueta DGT</span><select name="label">${LABELS.map(([k, l]) => `<option value="${k}" ${k === p.label ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="opt"><span class="lbl">Aceite<small>Tipo y cantidad, del libro del coche</small></span><input name="oil" maxlength="60" value="${esc(p.oil)}" placeholder="4 L · 5W-30"></label>`,
+      f => {
+        const v = n => f.elements[n].value.trim();
+        const isNewCar = v('brand') !== p.brand || v('model') !== p.model;
+        if (isNewCar && (car.fills.length || Object.keys(car.maint).length || car.itvs.length) &&
+          !confirm('Has cambiado de coche. ¿Borro las revisiones, repostajes, papeles e ITV del anterior?\n\nAceptar: empezar de cero · Cancelar: mantenerlos')) {
+          // Mantener el historial
+        } else if (isNewCar) {
+          Object.assign(car, { km: null, maint: {}, docs: {}, fills: [], itvs: [] });
+        }
+        Object.assign(car.profile, {
+          brand: v('brand'), model: v('model'), year: num(f, 'year'), version: v('version'), cc: num(f, 'cc'), hp: num(f, 'hp'),
+          fuel: v('fuel'), tank: num(f, 'tank'), consumption: num(f, 'consumption'), plate: v('plate').toUpperCase().replace(/[\s-]/g, ''),
+          label: v('label'), oil: v('oil'),
+        });
+        saveCar(); applyCarToVigia(); applyRealConsumption();
+        toast('Coche guardado');
+      });
   }
   function editKm() {
     subForm('Kilómetros del coche', `<label class="opt"><span class="lbl">Km que marca ahora<small>Míralo en el cuentakilómetros</small></span>
       <input name="km" type="number" inputmode="numeric" min="0" max="999999" required value="${car.km ?? ''}" placeholder="185000"></label>`,
       f => { car.km = Math.round(+f.elements.km.value); });
+  }
+  function addItv() {
+    subForm('Inspección ITV', `
+      <label class="opt"><span class="lbl">Fecha</span><input name="date" type="date" required max="${todayISO()}" value="${todayISO()}"></label>
+      <label class="opt"><span class="lbl">Km en la inspección</span><input name="km" type="number" inputmode="numeric" min="0" max="999999" placeholder="${car.km ?? ''}"></label>
+      <label class="opt"><span class="lbl">Resultado</span><select name="result"><option>Favorable</option><option>Desfavorable</option><option>Negativa</option></select></label>
+      <label class="opt"><span class="lbl">Nota (opcional)</span><input name="note" maxlength="80" placeholder="Defecto leve: luces"></label>`,
+      f => {
+        const date = f.elements.date.value, km = num(f, 'km'), result = f.elements.result.value, note = f.elements.note.value.trim();
+        car.itvs.push({ id: newId(), date, km, result, note });
+        if (km != null && (car.km == null || km > car.km)) car.km = km;
+        // La última favorable marca la fecha de la próxima ITV.
+        const lastOk = car.itvs.filter(x => x.result === 'Favorable').sort((a, b) => b.date.localeCompare(a.date))[0];
+        if (lastOk) { const next = addMonths(lastOk.date, itvEveryMonths()); if (!car.docs.itv || next > car.docs.itv) car.docs.itv = next; }
+        toast('Inspección guardada');
+      });
   }
   function editMaint(it) {
     const last = car.maint[it.k] || {};
@@ -2054,7 +2252,8 @@
       `<button type="button" class="btn-ghost" data-act="today">Hecho hoy</button>${last.km != null || last.date ? '<button type="button" class="btn-ghost" data-act="clear">Borrar</button>' : ''}`);
   }
   function editDoc(d) {
-    subForm(d.name, `<label class="opt"><span class="lbl">Vence el<small>${esc(d.tip || 'Mira la fecha en el papel o en el recibo')}</small></span>
+    const tip = d.k === 'itv' ? `${itvText()}. Mira la fecha en la pegatina del parabrisas o en la tarjeta ITV` : 'Mira la fecha en el papel o en el recibo';
+    subForm(d.name, `<label class="opt"><span class="lbl">Vence el<small>${esc(tip)}</small></span>
       <input name="date" type="date" required value="${car.docs[d.k] || ''}"></label>`,
       f => { if (!f) delete car.docs[d.k]; else car.docs[d.k] = f.elements.date.value; },
       car.docs[d.k] ? '<button type="button" class="btn-ghost" data-act="clear">Borrar</button>' : '');
