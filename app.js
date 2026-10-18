@@ -216,7 +216,15 @@
         tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'] } },
       layers: [{ id: 'sat', type: 'raster', source: 'sat' }],
     },
+    terrain: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
   };
+  // Satélite con nombres de calles y pueblos encima, para poder orientarse.
+  STYLES.satellite.sources.satRoads = { type: 'raster', tileSize: 256, maxzoom: 19,
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}'] };
+  STYLES.satellite.sources.satLabels = { type: 'raster', tileSize: 256, maxzoom: 19,
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'] };
+  STYLES.satellite.layers.push({ id: 'satRoads', type: 'raster', source: 'satRoads', paint: { 'raster-opacity': 0.75 } },
+    { id: 'satLabels', type: 'raster', source: 'satLabels' });
 
   const lastView = store.get('view', { c: [-3.7, 40.3], z: 5.4 });
   const map = new maplibregl.Map({
@@ -224,6 +232,98 @@
     center: lastView.c, zoom: lastView.z, attributionControl: { compact: true },
     maxPitch: 65, fadeDuration: 0,
   });
+
+  // ---------- Tipos de mapa y detalles ----------
+  // Fuentes gratuitas y sin clave: relieve (Mapzen/AWS), edificios (OpenFreeMap), bici (CyclOSM), tren (OpenRailwayMap).
+  const MAP_TYPES = [
+    { k: 'dark', name: 'Noche' }, { k: 'light', name: 'Día' }, { k: 'satellite', name: 'Satélite' }, { k: 'terrain', name: 'Relieve' },
+  ];
+  const MAP_DETAILS = [
+    { k: 'buildings', name: 'Edificios 3D' }, { k: 'bike', name: 'Carril bici' }, { k: 'rail', name: 'Tren y metro' },
+  ];
+  // Miniaturas propias de Vigía: paleta nocturna turquesa→azul del logo.
+  const MAP_ART = {
+    dark: `<rect width="64" height="64" fill="#0B1222"/><path d="M-4 50C14 46 18 30 34 28S54 14 70 8" stroke="#1E2A44" stroke-width="12" fill="none"/>
+      <path d="M-4 50C14 46 18 30 34 28S54 14 70 8" stroke="url(#mt-g)" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M8 -4 22 70" stroke="#1E2A44" stroke-width="5"/><circle cx="50" cy="44" r="7" fill="#F2F6FF"/><circle cx="53" cy="41.5" r="6" fill="#0B1222"/>`,
+    light: `<rect width="64" height="64" fill="#EAF1F7"/><rect x="36" y="34" width="24" height="26" rx="4" fill="#CFE9D9"/>
+      <path d="M-4 50C14 46 18 30 34 28S54 14 70 8" stroke="#fff" stroke-width="12" fill="none"/>
+      <path d="M-4 50C14 46 18 30 34 28S54 14 70 8" stroke="url(#mt-g)" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M8 -4 22 70" stroke="#fff" stroke-width="5"/><circle cx="48" cy="14" r="6" fill="#FFC83A"/>
+      <g stroke="#FFC83A" stroke-width="2" stroke-linecap="round"><path d="M48 3.5v2.5M48 22v2.5M37.5 14H40M56 14h2.5"/></g>`,
+    satellite: `<rect width="64" height="64" fill="#2E4A2C"/><path d="M0 0h30L22 26 0 34z" fill="#3C5E34"/><path d="M40 64 46 36 64 30v34z" fill="#6B6A3E"/>
+      <path d="M30 0 64 22v8L28 8z" fill="#55703F"/><path d="M-4 52C16 44 24 36 36 30S56 26 70 18" stroke="#B9B2A2" stroke-width="5" fill="none"/>
+      <g transform="translate(44 12) rotate(35)"><rect x="-3" y="-3" width="6" height="6" rx="1" fill="#F2F6FF"/><rect x="-12" y="-2" width="7" height="4" fill="#2F6EFF"/><rect x="5" y="-2" width="7" height="4" fill="#2F6EFF"/></g>
+      <path d="M34 22a14 14 0 0 1 4-12" stroke="#00E0C6" stroke-width="1.6" fill="none" stroke-dasharray="2 2"/>`,
+    terrain: `<rect width="64" height="64" fill="#EFE7D6"/><g fill="none" stroke-width="1.8">
+      <path d="M8 40c6-18 30-26 42-12s-8 30-26 26S4 50 8 40z" stroke="#C9B48E"/><path d="M16 39c5-11 22-16 29-7s-6 19-17 16-14-3-12-9z" stroke="#B19A70"/>
+      <path d="M24 38c3-6 12-8 15-3s-3 9-8 8-8-2-7-5z" stroke="#00B8A3"/></g>
+      <path d="M44 6 56 22H32z" fill="#9C8763"/><path d="M44 6 48 11.5 44 10 40.5 12z" fill="#fff"/>`,
+    buildings: `<rect width="64" height="64" fill="#0B1222"/><path d="M8 46 22 38l14 8-14 8z" fill="#1E2A44"/>
+      <path d="M14 44V22l10-6 10 6v22l-10 6z" fill="#2F6EFF"/><path d="M24 50V28l10-6v22z" fill="#1D4DC4"/><path d="M14 22l10 6 10-6-10-6z" fill="#7FA6FF"/>
+      <path d="M36 48V34l8-5 8 5v14l-8 5z" fill="#00E0C6"/><path d="M44 53V39l8-5v14z" fill="#00A792"/><path d="M36 34l8 5 8-5-8-5z" fill="#8FF5E8"/>`,
+    bike: `<rect width="64" height="64" fill="#0B1222"/><path d="M-4 44C18 40 30 20 70 18" stroke="#1E2A44" stroke-width="12" fill="none"/>
+      <path d="M-4 44C18 40 30 20 70 18" stroke="#34D873" stroke-width="3" fill="none" stroke-dasharray="5 4"/>
+      <g fill="none" stroke="#F2F6FF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="22" cy="50" r="6"/><circle cx="42" cy="50" r="6"/>
+      <path d="M22 50l7-11h10l3 11M29 39l5 11h8M36 35h5"/></g>`,
+    rail: `<rect width="64" height="64" fill="#0B1222"/><g stroke="#3B4766" stroke-width="3"><path d="M12 6 24 62M28 2 40 58" transform="rotate(-8 32 32)"/></g>
+      <g stroke="#55627F" stroke-width="2.4"><path d="M10 12h22M12 22h22M14 32h22M16 42h22M18 52h22" transform="rotate(-20 32 32)"/></g>
+      <rect x="34" y="14" width="20" height="26" rx="7" fill="url(#mt-g)"/><rect x="38" y="19" width="12" height="7" rx="2" fill="#0B1222"/>
+      <circle cx="39.5" cy="34" r="1.8" fill="#FFF6C8"/><circle cx="48.5" cy="34" r="1.8" fill="#FFF6C8"/>`,
+  };
+  const mapArt = k => `<svg viewBox="0 0 64 64"><defs><linearGradient id="mt-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00E0C6"/><stop offset="1" stop-color="#2F6EFF"/></linearGradient></defs>${MAP_ART[k]}</svg>`;
+  function mapPickerHtml() {
+    return `<div class="section-label">Tipo de mapa</div>
+      <div class="map-tiles">${MAP_TYPES.map(t => `<button type="button" class="map-tile" data-maptype="${t.k}" aria-pressed="${S.mapStyle === t.k}">${mapArt(t.k)}<span>${t.name}</span></button>`).join('')}</div>
+      <div class="section-label">Detalles del mapa</div>
+      <div class="map-tiles">${MAP_DETAILS.map(d => `<button type="button" class="map-tile" data-mapdetail="${d.k}" aria-pressed="${!!S['md_' + d.k]}">${mapArt(d.k)}<span>${d.name}</span></button>`).join('')}</div>
+      <p class="fine" style="margin:0">Los edificios 3D se ven al acercarte y con el mapa inclinado. Carril bici y tren se ven mejor con zoom de ciudad.</p>`;
+  }
+  /** Cambia tipo de mapa o detalles. Devuelve true si el clic era de aquí. */
+  function onMapPickerClick(t) {
+    if (t.dataset.maptype) { S.mapStyle = t.dataset.maptype; }
+    else if (t.dataset.mapdetail) { const k = 'md_' + t.dataset.mapdetail; S[k] = !S[k]; }
+    else return false;
+    saveS();
+    document.querySelectorAll('[data-maptype]').forEach(b => b.setAttribute('aria-pressed', b.dataset.maptype === S.mapStyle));
+    document.querySelectorAll('[data-mapdetail]').forEach(b => b.setAttribute('aria-pressed', !!S['md_' + b.dataset.mapdetail]));
+    map.setStyle(STYLES[S.mapStyle] || STYLES.dark, { diff: false });
+    return true;
+  }
+
+  // Se ejecuta antes que el resto de capas de Vigía (rutas, radares, gasolineras), así quedan siempre debajo.
+  function addMapDetails() {
+    const layers = map.getStyle().layers || [];
+    const firstLabel = (layers.find(l => l.type === 'symbol') || {}).id;
+    const dark = S.mapStyle === 'dark' || S.mapStyle === 'satellite';
+    try {
+      if (S.mapStyle === 'terrain') {
+        map.addSource('vg-dem', { type: 'raster-dem', encoding: 'terrarium', tileSize: 256, maxzoom: 14,
+          tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], attribution: 'Relieve © Mapzen' });
+        map.addLayer({ id: 'vg-hillshade', type: 'hillshade', source: 'vg-dem',
+          paint: { 'hillshade-exaggeration': 0.6, 'hillshade-shadow-color': '#5A4A30', 'hillshade-highlight-color': '#FFFFFF', 'hillshade-accent-color': '#7A6A4A' } }, firstLabel);
+      }
+      if (S.md_bike) {
+        map.addSource('vg-bike', { type: 'raster', tileSize: 256, maxzoom: 18, attribution: 'Bici © CyclOSM',
+          tiles: ['a', 'b', 'c'].map(s => `https://${s}.tile-cyclosm.openstreetmap.fr/cyclosm-lite/{z}/{x}/{y}.png`) });
+        map.addLayer({ id: 'vg-bike', type: 'raster', source: 'vg-bike', minzoom: 11, paint: { 'raster-opacity': 0.9 } }, firstLabel);
+      }
+      if (S.md_rail) {
+        map.addSource('vg-rail', { type: 'raster', tileSize: 256, maxzoom: 19, attribution: 'Tren © OpenRailwayMap',
+          tiles: ['a', 'b', 'c'].map(s => `https://${s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png`) });
+        map.addLayer({ id: 'vg-rail', type: 'raster', source: 'vg-rail', minzoom: 8, paint: { 'raster-opacity': 0.85 } }, firstLabel);
+      }
+      if (S.md_buildings) {
+        map.addSource('vg-ofm', { type: 'vector', url: 'https://tiles.openfreemap.org/planet', attribution: 'Edificios © OpenFreeMap' });
+        map.addLayer({ id: 'vg-buildings', type: 'fill-extrusion', source: 'vg-ofm', 'source-layer': 'building', minzoom: 14,
+          paint: { 'fill-extrusion-color': dark ? '#26324F' : '#D8D2C6',
+            'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
+            'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+            'fill-extrusion-opacity': ['interpolate', ['linear'], ['zoom'], 14, 0, 15, 0.85] } }, firstLabel);
+      }
+    } catch (e) { console.warn('Detalles del mapa', e); }
+  }
+  map.on('style.load', addMapDetails);
 
   const RADAR_GLYPH = {
     fixed: ctx => { ctx.fill(new Path2D('M5 7h10a2.5 2.5 0 0 1 2.5 2.5v5.5A2.5 2.5 0 0 1 15 17.5H5A2.5 2.5 0 0 1 2.5 15V9.5A2.5 2.5 0 0 1 5 7zM17.5 10.5 21.5 8v8.5l-4-2.5z')); return [[10, 12.2, 2.8]]; },
@@ -1769,12 +1869,16 @@
 
   function openLayers() {
     openSheet('layers', 'Qué ver en el mapa', `
+      ${mapPickerHtml()}
+      <div class="section-label">Radares y gasolineras</div>
       <div class="group">${typeRows()}</div>
       <p class="fine" style="margin:0">Lo que ocultes tampoco te avisará. Los radares que hayas ocultado se pueden volver a mostrar aquí o en Ajustes.</p>
       <div class="btns"><button class="btn-soft" type="button" data-all="1">Mostrar todo</button></div>`);
     const body = $('#sheetBody');
     body.onchange = onSettingChange;
     body.onclick = e => {
+      const t = e.target.closest('button');
+      if (t && onMapPickerClick(t)) return;
       if (!e.target.closest('[data-all]')) return;
       TYPES.forEach(k => { S['sh_' + k] = true; });
       saveS(); applyVisibility(); openLayers();
@@ -1793,7 +1897,6 @@
     S[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     saveS();
     if (k.startsWith('sh_')) applyVisibility();
-    if (k === 'mapStyle') map.setStyle(STYLES[S.mapStyle]);
     if (k === 'layer') { renderChips(); drawRadars(); drawStations(); }
     if (k === 'showGone') drawRadars();
     if (k === 'fuel') { car.profile.fuel = S.fuel; saveCar(); drawStations(); renderCheap(); }
@@ -1845,8 +1948,8 @@
       <div class="group">
         ${sel('layer', 'Mostrar', [['all', 'Todo'], ['radars', 'Solo radares'], ['gas', 'Solo gasolineras'], ['none', 'Solo mapa']])}
         ${sw('showGone', 'Ver radares retirados', 'En gris, los que ya no están')}
-        ${sel('mapStyle', 'Estilo', [['dark', 'Oscuro'], ['light', 'Claro'], ['satellite', 'Satélite']])}
       </div>
+      <div class="map-pick">${mapPickerHtml()}</div>
       <div class="section-label">Tu icono en el mapa</div>
       <div class="group me-pick">
         <div class="opt col"><span class="lbl">Básicos</span><div class="me-grid" id="meGrid1">${meTiles(true)}</div></div>
@@ -1880,6 +1983,7 @@
       const t = e.target.closest('button');
       if (!t) return;
       if (t.dataset.act === 'car') return openCar();
+      if (onMapPickerClick(t)) return;
       if (t.dataset.me || t.dataset.mecolor || t.dataset.mesize) {
         if (t.dataset.me) S.meStyle = t.dataset.me;
         if (t.dataset.mecolor) S.meColor = t.dataset.mecolor;
