@@ -82,9 +82,10 @@
   /** Radares de una ruta que te afectan: sobre el camino y en tu sentido de marcha.
    *  Las listas oficiales a veces sitúan el radar a 50-150 m de la línea de la ruta: si el
    *  radar es de la misma carretera que ese tramo de la ruta, también cuenta. */
-  function routeRadars(route) {
+  function routeRadars(route, includeHidden = false) {
     const line = route.line, spans = route.spans || [];
-    return V.radarsOnLine(line, alertable(), 150).filter(x => {
+    const pool = includeHidden ? allRadars().filter(r => r.status !== 'gone') : alertable();
+    return V.radarsOnLine(line, pool, 150).filter(x => {
       const r = x.radar;
       if (dirKnown(r) && V.angleDiff(r.dir, V.pointAt(line, x.along).bearing) > 60) return false;
       if (x.dist < 50) return true;
@@ -94,6 +95,11 @@
       for (const sp of spans) { if (sp.along <= x.along + 1) span = sp; else break; }
       return !!(span && span.refs.includes(code));
     });
+  }
+  /** Los radares cambian (llega la lista, avisos nuevos, filtros): recalcula la ruta en curso y las tarjetas de rutas. */
+  function refreshRouteRadars() {
+    if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
+    if (st.routes && st.routes.length) renderPlanner();
   }
   /** Tramos de la ruta con su carretera (para saber por qué vía va cada parte). */
   function routeSpans(line, steps) {
@@ -669,7 +675,7 @@
       addNearbyOsm(extra);
       st.radarSource = `${j.fuente || 'OpenStreetMap'} · ${new Date(j.actualizado).toLocaleDateString('es-ES')}`;
       drawRadars();
-      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
+      refreshRouteRadars();
     } catch {
       if (st.pos) loadOverpassAround(st.pos.lat, st.pos.lon);
     }
@@ -706,7 +712,7 @@
         if (addNearbyOsm(list)) {
           if (empty) st.radarSource = 'OpenStreetMap (50 km a tu alrededor)';
           drawRadars();
-          if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
+          refreshRouteRadars();
         }
         return;
       } catch { /* probar el siguiente servidor */ }
@@ -725,7 +731,7 @@
       st.community = V.communityFromMessages(msgs);
       st.communityAt = now();
       drawRadars();
-      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
+      refreshRouteRadars();
       refreshOpenRadarDetail();
     } catch { /* sin conexión: se reintenta */ }
   }
@@ -766,7 +772,7 @@
       await publish({ t: 'x', id, d: deviceId });
       st.community = st.community.filter(r => r.id !== id);
       drawRadars();
-      if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
+      refreshRouteRadars();
       toast('Aviso borrado');
       setTimeout(pollCommunity, 800);
       return true;
@@ -930,7 +936,6 @@
         distance: rt.distance, duration: rt.duration,
         via: rt.legs.map(l => l.summary).filter(Boolean).join(', '),
         liters, cost: liters * price, price,
-        radars: routeRadars({ line, spans }),
       };
     });
     return V.dedupeRoutes(list);
@@ -1501,17 +1506,18 @@
     }
 
     const crit = CRITERIA.find(c => c.k === S.criterion);
-    html += vis.map((r, i) => `
+    const rc = r => { const all = routeRadars(r, true).length; return { all, hidden: all - routeRadars(r).length }; };
+    html += vis.map((r, i) => { const n = rc(r); return `
       <button class="rcard ${sel && r.id === sel.id ? 'sel' : ''}" type="button" data-route="${r.id}">
         <div class="top"><span class="time">${fmt.dur(r.duration)}</span><span class="km">${fmt.dist(r.distance)}</span>
           ${i === 0 ? `<span class="best-tag">${ic(crit.icon)}${crit.best}</span>` : ''}</div>
         ${r.via ? `<div class="via">Por ${esc(r.via)}</div>` : ''}
         <div class="pills">
           <span class="pill" style="--c:var(--cheap)">${ic('i-fuel')}${fmt.liters(r.liters)} · ${fmt.eur(r.cost)}</span>
-          <span class="pill" style="--c:${r.radars.length ? 'var(--red)' : 'var(--muted)'}">${ic('i-camera')}${r.radars.length} radar${r.radars.length === 1 ? '' : 'es'}</span>
+          <span class="pill" style="--c:${n.all ? 'var(--red)' : 'var(--muted)'}">${ic('i-camera')}${n.all} radar${n.all === 1 ? '' : 'es'}${n.hidden ? ` · ${n.hidden} oculto${n.hidden === 1 ? '' : 's'}` : ''}</span>
           <span class="pill" style="--c:${r.hasTolls ? 'var(--mid)' : 'var(--teal)'}">${ic(r.hasTolls ? 'i-euro' : 'i-check')}${r.hasTolls ? 'Peaje' : 'Sin peaje'}</span>
         </div>
-      </button>`).join('');
+      </button>`; }).join('');
     if (sel) {
       html += `<button class="btn-grad" type="button" data-act="go">${ic('i-locate')}Iniciar navegación</button>`;
       html += `<p class="fine">Consumo estimado con ${fmt.liters(S.consumption)}/100 km y ${V.FUELS.find(f => f.key === S.fuel).label} a ${fmt.price(sel.price)} €/L (media de las gasolineras más baratas cerca). El precio del peaje no se incluye.</p>`;
@@ -1732,7 +1738,7 @@
   function applyVisibility() {
     renderChips(); drawRadars(); drawStations(); renderCheap();
     currentRadar = null; renderBanner();
-    if (st.nav) st.nav.radarsOn = routeRadars(st.nav.route);
+    refreshRouteRadars();
   }
 
   function onSettingChange(e) {
