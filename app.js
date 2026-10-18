@@ -40,6 +40,7 @@
     layer: 'all', showGone: true, mapStyle: 'dark',
     tolls: 'avoid', criterion: 'eco', avoidMotorways: false,
     fuel: 'g95', consumption: 6.5,
+    meStyle: 'arrow', meColor: '#00E0C6', meSize: 'm',
     // Qué se ve en el mapa (lo oculto tampoco avisa)
     sh_fixed: true, sh_section: true, sh_mobile: true, sh_light: true, sh_police: true, sh_gas: true,
   };
@@ -333,14 +334,59 @@
     })) });
   }
 
-  // Marcador de mi posición
+  // Marcador de mi posición: varios iconos a elegir (todos miran hacia arriba = hacia donde vas).
+  const ME_COLORS = [['#00E0C6', 'Turquesa'], ['#2F6EFF', 'Azul'], ['#9B6BFF', 'Morado'], ['#FF5CA8', 'Rosa'],
+    ['#FF4554', 'Rojo'], ['#FF8A3D', 'Naranja'], ['#FFC83A', 'Amarillo'], ['#F2F6FF', 'Blanco']];
+  const shade = (hex, f) => '#' + [1, 3, 5].map(i => Math.max(0, Math.min(255, Math.round(parseInt(hex.slice(i, i + 2), 16) * f))).toString(16).padStart(2, '0')).join('');
+  let meSeq = 0;
+  const ME_STYLES = {
+    // --- Básicos ---
+    arrow: { name: 'Flecha', basic: true, svg: (c, id) => `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c}"/><stop offset="1" stop-color="${shade(c, .55)}"/></linearGradient></defs>
+      <circle cx="24" cy="24" r="20" fill="${c}" opacity=".18"/><path d="M24 8 35 36 24 30 13 36z" fill="url(#${id})" stroke="#fff" stroke-width="2.6" stroke-linejoin="round"/>` },
+    dot: { name: 'Punto', basic: true, svg: c => `<path d="M24 3 32 15Q24 11 16 15z" fill="${c}" opacity=".55"/><circle cx="24" cy="24" r="12" fill="${c}" opacity=".2"/>
+      <circle cx="24" cy="24" r="8.5" fill="${c}" stroke="#fff" stroke-width="3"/>` },
+    car: { name: 'Coche', basic: true, svg: c => `<rect x="14.5" y="7" width="19" height="34" rx="7.5" fill="${c}" stroke="#fff" stroke-width="2"/>
+      <ellipse cx="13.6" cy="19" rx="2" ry="1.4" fill="${c}" stroke="#fff" stroke-width="1"/><ellipse cx="34.4" cy="19" rx="2" ry="1.4" fill="${c}" stroke="#fff" stroke-width="1"/>
+      <path d="M17.2 17h13.6l-1.6 5.5H18.8z" fill="#0B1220" opacity=".78"/><rect x="18.6" y="23.5" width="10.8" height="9" rx="2.2" fill="#fff" opacity=".2"/>
+      <path d="M18.5 34h11l-.8 3.6h-9.4z" fill="#0B1220" opacity=".7"/><circle cx="18.6" cy="9.6" r="1.4" fill="#FFF6C8"/><circle cx="29.4" cy="9.6" r="1.4" fill="#FFF6C8"/>` },
+    // --- Únicos de Vigía ---
+    beam: { name: 'Faro', svg: (c, id) => `<defs><linearGradient id="${id}" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="${c}" stop-opacity=".75"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></linearGradient></defs>
+      <path class="me-beam" d="M24 24 9 1Q24-3 39 1z" fill="url(#${id})"/><circle cx="24" cy="24" r="10" fill="${c}" opacity=".25"/>
+      <circle cx="24" cy="24" r="7" fill="#fff" stroke="${c}" stroke-width="4"/>` },
+    comet: { name: 'Cometa', svg: (c, id) => `<defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity=".95"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></linearGradient>
+      <radialGradient id="${id}h"><stop offset="0" stop-color="#fff"/><stop offset=".55" stop-color="#fff"/><stop offset="1" stop-color="${c}"/></radialGradient></defs>
+      <path class="me-tail" d="M24 18C16 28 18 38 24 47 30 38 32 28 24 18z" fill="url(#${id})"/>
+      <circle cx="24" cy="18" r="11" fill="${c}" opacity=".25"/><circle cx="24" cy="18" r="7.5" fill="url(#${id}h)"/>
+      <circle class="me-spark" cx="15" cy="30" r="1.3" fill="#fff"/><circle class="me-spark s2" cx="33" cy="34" r="1" fill="#fff"/>` },
+    koi: { name: 'Koi', svg: c => `<g class="me-tailfin"><path d="M24 33C18 37 17 44 20.5 46.5 22.5 43 23.5 40 24 37.5 24.5 40 25.5 43 27.5 46.5 31 44 30 37 24 33z" fill="${c}" opacity=".85" stroke="#fff" stroke-width="1.2"/></g>
+      <path d="M17 19 11 23 17.5 24zM31 19 37 23 30.5 24z" fill="${c}" opacity=".8"/>
+      <path d="M24 5C31.5 9 31.5 24 27.5 31L24 36 20.5 31C16.5 24 16.5 9 24 5z" fill="${c}" stroke="#fff" stroke-width="2"/>
+      <path d="M21 15c2-2 5-1.5 6 .5-1.5 2.5-4.5 3-6-.5zM22.5 24c1.5-1 3.5-.6 4 .8-1.2 1.6-3 1.6-4-.8z" fill="#fff" opacity=".85"/>
+      <circle cx="21.4" cy="10.5" r="1.2" fill="#0B1220"/><circle cx="26.6" cy="10.5" r="1.2" fill="#0B1220"/>` },
+    plane: { name: 'Avión de papel', svg: c => `<path d="M24 4 39 41 24 32z" fill="${shade(c, .7)}" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M24 4 9 41 24 32z" fill="${c}" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>` },
+    rocket: { name: 'Cohete', svg: c => `<path class="me-flame" d="M20.5 38Q24 49 27.5 38z" fill="#FFB23D"/><path class="me-flame" d="M22.2 38Q24 44.5 25.8 38z" fill="#FFF3B0"/>
+      <path d="M18 29 11.5 36.5 18.5 35zM30 29 36.5 36.5 29.5 35z" fill="${shade(c, .7)}" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
+      <path d="M24 3C30.5 10 31.5 21 29.5 33L27.5 38H20.5L18.5 33C16.5 21 17.5 10 24 3z" fill="${c}" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+      <circle cx="24" cy="17" r="3.6" fill="#0B1220" stroke="#fff" stroke-width="1.5"/>` },
+  };
+  const ME_SIZES = { s: 34, m: 44, l: 56 };
+  const meSvg = (style, color) => `<svg viewBox="0 0 48 48" class="me-${style}">${(ME_STYLES[style] || ME_STYLES.arrow).svg(color, 'gme' + (++meSeq))}</svg>`;
+
   const meEl = document.createElement('div');
   meEl.className = 'me';
-  meEl.innerHTML = `<div class="halo"></div><svg viewBox="0 0 40 40"><defs><linearGradient id="g-me" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00E0C6"/><stop offset="1" stop-color="#2F6EFF"/></linearGradient></defs>
-    <circle cx="20" cy="20" r="17" fill="rgba(0,224,198,.18)"/><path d="M20 6 30 31 20 26 10 31z" fill="url(#g-me)" stroke="#fff" stroke-width="2.4" stroke-linejoin="round"/></svg>`;
+  function renderMe() {
+    const style = ME_STYLES[S.meStyle] ? S.meStyle : 'arrow', color = S.meColor || '#00E0C6', size = ME_SIZES[S.meSize] || ME_SIZES.m;
+    meEl.style.setProperty('--me', color);
+    meEl.style.setProperty('--me-size', size + 'px');
+    meEl.innerHTML = `<div class="halo"></div>${meSvg(style, color)}`;
+    haloEl = meEl.querySelector('.halo');
+    try { if (disp) updateHalo(); } catch { /* aún no hay posición */ }
+  }
+  let haloEl = null;
+  renderMe();
   const meMarker = new maplibregl.Marker({ element: meEl, rotationAlignment: 'map', pitchAlignment: 'map' });
   let meAdded = false;
-  const haloEl = meEl.querySelector('.halo');
 
   const destEl = document.createElement('div');
   destEl.className = 'dest-pin';
@@ -1764,6 +1810,10 @@
       ${opts.map(([v, l]) => `<option value="${v}" ${String(S[key]) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
   }
 
+  function meTiles(basic) {
+    return Object.entries(ME_STYLES).filter(([, m]) => !!m.basic === basic).map(([k, m]) =>
+      `<button type="button" class="me-tile" data-me="${k}" aria-pressed="${S.meStyle === k}">${meSvg(k, S.meColor)}<span>${m.name}</span></button>`).join('');
+  }
   function openSettings() {
     openSheet('settings', 'Ajustes', `
       <div class="about">${ic('logo')}<div><b class="grad">Vigía</b><div class="fine">Radares · Rutas · Gasolineras</div></div></div>
@@ -1797,6 +1847,13 @@
         ${sw('showGone', 'Ver radares retirados', 'En gris, los que ya no están')}
         ${sel('mapStyle', 'Estilo', [['dark', 'Oscuro'], ['light', 'Claro'], ['satellite', 'Satélite']])}
       </div>
+      <div class="section-label">Tu icono en el mapa</div>
+      <div class="group me-pick">
+        <div class="opt col"><span class="lbl">Básicos</span><div class="me-grid" id="meGrid1">${meTiles(true)}</div></div>
+        <div class="opt col"><span class="lbl">Solo en Vigía</span><div class="me-grid" id="meGrid2">${meTiles(false)}</div></div>
+        <div class="opt col"><span class="lbl">Color</span><div class="me-colors">${ME_COLORS.map(([c, n]) => `<button type="button" data-mecolor="${c}" aria-label="${n}" aria-pressed="${S.meColor === c}" style="--c:${c}"></button>`).join('')}</div></div>
+        <div class="opt col"><span class="lbl">Tamaño</span><div class="seg" id="meSizeSeg">${[['s', 'Pequeño'], ['m', 'Normal'], ['l', 'Grande']].map(([k, l]) => `<button type="button" data-mesize="${k}" aria-pressed="${S.meSize === k}">${l}</button>`).join('')}</div></div>
+      </div>
       <div class="section-label">Rutas</div>
       <div class="group">
         ${sel('tolls', 'Peajes', [['avoid', 'Sin peajes'], ['any', 'Con peajes']])}
@@ -1823,6 +1880,16 @@
       const t = e.target.closest('button');
       if (!t) return;
       if (t.dataset.act === 'car') return openCar();
+      if (t.dataset.me || t.dataset.mecolor || t.dataset.mesize) {
+        if (t.dataset.me) S.meStyle = t.dataset.me;
+        if (t.dataset.mecolor) S.meColor = t.dataset.mecolor;
+        if (t.dataset.mesize) S.meSize = t.dataset.mesize;
+        saveS(); renderMe();
+        $('#meGrid1').innerHTML = meTiles(true); $('#meGrid2').innerHTML = meTiles(false);
+        document.querySelectorAll('[data-mecolor]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mecolor === S.meColor));
+        document.querySelectorAll('[data-mesize]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mesize === S.meSize));
+        return;
+      }
       if (t.dataset.test === 'far') play('far');
       if (t.dataset.test === 'near') play('near');
       if (t.dataset.test === 'voice') { unlockAudio(); say('En 300 metros, toma la salida hacia Manresa. Radar fijo a 500 metros. Límite 80', true); }
