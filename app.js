@@ -298,7 +298,7 @@
       <div class="map-tiles">${MAP_TYPES.map(t => `<button type="button" class="map-tile" data-maptype="${t.k}" aria-pressed="${S.mapStyle === t.k}">${mapArt(t.k)}<span>${t.name}</span></button>`).join('')}</div>
       <div class="section-label">Detalles del mapa</div>
       <div class="map-tiles">${MAP_DETAILS.map(d => `<button type="button" class="map-tile" data-mapdetail="${d.k}" aria-pressed="${!!S['md_' + d.k]}">${mapArt(d.k)}<span>${d.name}</span></button>`).join('')}</div>
-      <p class="fine" style="margin:0">Los edificios 3D se ven al acercarte y con el mapa inclinado. Carril bici, tren y cámaras se ven mejor con zoom de ciudad. Incidencias y cámaras: DGT y Servei Català de Trànsit.</p>`;
+      <p class="fine" style="margin:0">Los edificios 3D se ven al acercarte y con el mapa inclinado. Carril bici, tren y cámaras se ven mejor con zoom de ciudad. Incidencias y cámaras: DGT y Servei Català de Trànsit (también en Cataluña).</p>`;
   }
   /** Cambia tipo de mapa o detalles. Devuelve true si el clic era de aquí. */
   function onMapPickerClick(t) {
@@ -3120,7 +3120,7 @@
     if (!cams) return;
     try {
       const r = await fetchTimeout('data/camaras.json?v=' + Math.floor(now() / 3600e3), 20000);
-      if (r.ok) { const j = await r.json(); st.cameras = (j.c || []).map(x => ({ id: x[0], lat: x[1], lon: x[2], road: x[3], km: x[4], url: x[5] })); drawTraffic(); }
+      if (r.ok) { const j = await r.json(); st.cameras = (j.c || []).map(x => ({ id: x[0], lat: x[1], lon: x[2], road: x[3], km: x[4], url: x[5], place: x[6] || '' })); drawTraffic(); }
     } catch { /* aún no hay datos */ }
   }
   function trafficImage(id) {
@@ -3181,7 +3181,7 @@
     const src = () => x.url + (x.url.includes('?') ? '&' : '?') + 't=' + Math.floor(now() / 60000);
     openSheet('camera', x.road ? `Cámara ${x.road}` : 'Cámara DGT', `
       <img class="cam-img" id="camImg" src="${esc(src())}" alt="Imagen en directo de la cámara">
-      <p class="fine" style="margin:0">${x.km ? `Km ${esc(x.km)} · ` : ''}Foto de la DGT: la cambian cada 3 minutos y suele tener unos 5 minutos de retraso. Vigía la recarga sola.</p>`);
+      <p class="fine" style="margin:0">${x.place ? `${esc(x.place)} · ` : ''}${x.km ? `Km ${esc(x.km)} · ` : ''}${String(x.id).startsWith('sct-') ? 'Foto del Servei Català de Trànsit: la cambian cada 5 minutos' : 'Foto de la DGT: la cambian cada 3 minutos y suele tener unos 5 minutos de retraso'}. Vigía la recarga sola.</p>`);
     $('#sheetBody').onclick = null; $('#sheetBody').onchange = null;
     const img = $('#camImg'); img.onerror = () => { img.replaceWith(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Esta cámara no está emitiendo ahora mismo.' })); };
     clearInterval(camTimer);
