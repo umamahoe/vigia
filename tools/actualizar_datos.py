@@ -419,15 +419,148 @@ def update_radars(force=False):
     print(f"Radares: {len(rows)} {counts}" + (f" (errores: {errors})" if errors else ""))
 
 
+# ---------------- Tráfico: incidencias y cámaras ----------------
+# DGT (toda España salvo Cataluña y País Vasco) + Servei Català de Trànsit (Cataluña).
+# Formato DATEX2: se lee sin depender de los prefijos de cada versión.
+INCIDENCIAS = os.path.join(DATA, "incidencias.json")
+CAMARAS = os.path.join(DATA, "camaras.json")
+INC_FEEDS = [("dgt", "https://nap.dgt.es/datex2/v3/dgt/SituationPublication/datex2_v37.xml"),
+             ("sct", "https://nap.dgt.es/datex2/sct/SituationPublication/all/content.xml")]
+CAM_FEED = "https://nap.dgt.es/datex2/v3/dgt/DevicePublication/camaras_datex2_v37.xml"
+XSI = "{http://www.w3.org/2001/XMLSchema-instance}type"
+
+# Tipo de incidencia → clave corta que entiende la app
+INC_KIND = {
+    "accident": "acc", "vehicleobstruction": "obs", "obstruction": "obs", "generalobstruction": "obs",
+    "animalpresenceobstruction": "obs", "environmentalobstruction": "obs", "equipmentorsystemfault": "obs",
+    "maintenanceworks": "obr", "roadworks": "obr", "constructionworks": "obr",
+    "abnormaltraffic": "ret", "conditions": "met", "poorenvironmentconditions": "met",
+    "weatherrelatedroadconditions": "met", "nonweatherrelatedroadconditions": "met",
+    "roadorcarriagewayorlanemanagement": "cor", "generalnetworkmanagement": "cor", "speedmanagement": "cor",
+}
+# Detalles útiles (en inglés en el DATEX2) → español corto
+INC_DETAIL = {
+    "roadclosed": "carretera cortada", "laneclosures": "carril cortado", "narrowlanes": "carriles estrechos",
+    "carriagewayclosures": "calzada cortada", "singlealternatelinetraffic": "paso alternativo",
+    "contraflow": "doble sentido en un carril", "stationarytraffic": "tráfico parado", "queuingtraffic": "retención",
+    "slowtraffic": "tráfico lento", "heavytraffic": "tráfico denso", "snow": "nieve", "ice": "hielo", "fog": "niebla",
+    "flooding": "inundación", "rain": "lluvia", "strongwinds": "viento fuerte", "snowchainsmandatory": "cadenas obligatorias",
+    "useofspecifiedlanesorcarriagewaysallowed": "desvío", "resurfacingwork": "asfaltado", "roadmaintenance": "mantenimiento",
+}
+
+
+def local(tag):
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def parse_incidents(xml_text, src):
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml_text)
+    out = []
+    for rec in root.iter():
+        if local(rec.tag) != "situationRecord":
+            continue
+        typ = local((rec.get(XSI) or "").split(":")[-1]).lower()
+        kind = INC_KIND.get(typ, "inc")
+        lats, lons, road, start, status, detail, sev = [], [], "", "", "", "", ""
+        for el in rec.iter():
+            n, tx = local(el.tag), (el.text or "").strip()
+            if not tx:
+                continue
+            if n == "latitude":
+                lats.append(float(tx))
+            elif n == "longitude":
+                lons.append(float(tx))
+            elif n in ("roadName", "roadNumber") and not road:
+                road = tx
+            elif n == "overallStartTime" and not start:
+                start = tx
+            elif n == "validityStatus":
+                status = tx
+            elif n in ("severity", "overallSeverity", "impactOnTraffic") and not sev:
+                sev = tx
+            elif tx.lower() in INC_DETAIL and not detail:
+                detail = INC_DETAIL[tx.lower()]
+        if status == "suspended" or not lats or len(lats) != len(lons):
+            continue
+        if kind == "ret" and not detail:
+            detail = "retención"
+        row = [f"{src}-{rec.get('id')}", kind, round(lats[0], 5), round(lons[0], 5),
+               round(lats[-1], 5), round(lons[-1], 5), road, detail, start[:16], sev]
+        if 27 < row[2] < 44.5 and -19 < row[3] < 5:
+            out.append(row)
+    return out
+
+
+def update_incidents():
+    rows, errors = [], []
+    for src, url in INC_FEEDS:
+        try:
+            got = parse_incidents(get_text(url, 90), src)
+            rows += got
+            print(f"Incidencias {src}: {len(got)}")
+        except Exception as e:
+            errors.append(f"{src}: {e}")
+            print(f"Incidencias {src}: {e}", file=sys.stderr)
+    if len(errors) == len(INC_FEEDS):
+        raise RuntimeError("ninguna fuente de incidencias respondió")
+    seen, uniq = set(), []
+    for r in rows:
+        if r[0] not in seen:
+            seen.add(r[0]); uniq.append(r)
+    write_lines(INCIDENCIAS, {"actualizado": now_iso(), "fuente": "DGT · Servei Català de Trànsit"}, "i", uniq)
+
+
+def update_cameras():
+    old = load(CAMARAS) or {}
+    try:
+        age = time.time() - datetime.fromisoformat(old.get("actualizado")).timestamp()
+    except (TypeError, ValueError):
+        age = 1e9
+    if age < 6 * 3600 and old.get("c"):
+        print("Cámaras: al día")
+        return
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(get_text(CAM_FEED, 120))
+    rows = []
+    for dev in root.iter():
+        if local(dev.tag) != "device":
+            continue
+        lat = lon = url = None
+        road = km = ""
+        for el in dev.iter():
+            n, tx = local(el.tag), (el.text or "").strip()
+            if not tx:
+                continue
+            if n == "latitude" and lat is None:
+                lat = float(tx)
+            elif n == "longitude" and lon is None:
+                lon = float(tx)
+            elif n == "deviceUrl":
+                url = tx
+            elif n in ("roadName", "roadNumber") and not road:
+                road = tx
+            elif ("kilometer" in n.lower() or n.lower() in ("pk", "kilometrepoint", "kilometerpoint")) and not km:
+                km = tx
+        if lat is None or lon is None or not url:
+            continue
+        rows.append([dev.get("id"), round(lat, 5), round(lon, 5), road, km, url])
+    if len(rows) < 100:
+        raise RuntimeError(f"Solo {len(rows)} cámaras: no se sobrescribe")
+    write_lines(CAMARAS, {"actualizado": now_iso(), "fuente": "DGT"}, "c", rows)
+    print(f"Cámaras: {len(rows)}")
+
+
 def main():
     errors = []
-    for name, fn in (("precios", update_prices), ("radares", lambda: update_radars("--radares" in sys.argv))):
+    for name, fn in (("precios", update_prices), ("radares", lambda: update_radars("--radares" in sys.argv)),
+                     ("incidencias", update_incidents), ("camaras", update_cameras)):
         try:
             fn()
         except Exception as e:
             errors.append(f"{name}: {e}")
             print(f"ERROR {name}: {e}", file=sys.stderr)
-    if len(errors) == 2:
+    if len(errors) == 4:
         sys.exit(1)
 
 
