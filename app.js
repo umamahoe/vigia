@@ -40,7 +40,7 @@
     layer: 'all', showGone: true, mapStyle: 'dark',
     tolls: 'avoid', criterion: 'eco', avoidMotorways: false,
     fuel: 'g95', consumption: 6.5,
-    meStyle: 'arrow', meColor: '#00E0C6', meSize: 'm',
+    meStyle: 'arrow', meColor: '#00E0C6', meSize: 'm', autoTrips: true,
     // Qué se ve en el mapa (lo oculto tampoco avisa)
     sh_fixed: true, sh_section: true, sh_mobile: true, sh_light: true, sh_police: true, sh_gas: true,
   };
@@ -687,6 +687,7 @@
     evaluateRadars(lat, lon);
     renderSpeed();
     throttledCheap();
+    Trips.onFix(lat, lon, acc, speed || 0, t);
   }
 
   function onPositionError(e) {
@@ -875,6 +876,7 @@
       const msgs = text.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } })
         .filter(m => m && m.event === 'message');
       st.community = V.communityFromMessages(msgs);
+      st.cmsgs = msgs;
       st.communityAt = now();
       drawRadars();
       refreshRouteRadars();
@@ -883,6 +885,7 @@
   }
 
   async function publish(payload) {
+    if (S.nick && (payload.t === 'r' || payload.t === 'v')) payload = { ...payload, n: S.nick.slice(0, 20) };
     const r = await fetchTimeout(`${CONFIG.ntfy}/`, 15000, {
       method: 'POST', body: JSON.stringify({ topic: CONFIG.ntfyTopic, message: JSON.stringify(payload) }),
     });
@@ -899,12 +902,14 @@
     try {
       if (near) {
         await publish({ t: 'v', id: near.id, v: 1, d: deviceId });
-        toast(`${V.KINDS[kind].label} confirmado. ¡Gracias!`);
+        addMyStat('votes');
+        toast(`${V.KINDS[kind].label} confirmado. ¡Gracias! +1 punto`);
       } else {
         const id = Math.random().toString(36).slice(2, 11);
         const b = st.heading != null && st.speed > 10 ? Math.round(st.heading) : undefined;
         await publish({ t: 'r', id, k: kind, la: +st.pos.lat.toFixed(6), lo: +st.pos.lon.toFixed(6), b, d: deviceId });
-        toast(`${V.KINDS[kind].label} avisado`, { label: 'Deshacer', fn: () => deleteReport(id) });
+        addMyStat('reports');
+        toast(`${V.KINDS[kind].label} avisado · +3 puntos`, { label: 'Deshacer', fn: () => deleteReport(id) });
       }
       setTimeout(pollCommunity, 800);
     } catch {
@@ -931,6 +936,7 @@
   async function vote(id, v) {
     try {
       await publish({ t: 'v', id, v, d: deviceId });
+      if (v > 0) addMyStat('votes');
       toast(v > 0 ? 'Confirmado: sigue ahí' : 'Anotado: ya no está');
       closeSheet();
       setTimeout(pollCommunity, 800);
@@ -1100,6 +1106,7 @@
       const sel = selectedRoute(); if (sel) fitRoute(sel);
       setFollow(false);
       renderPlanner();
+      annotateRoutes();
     } catch (e) {
       renderPlanner(e.message === 'NoRoute' ? 'No hay ninguna ruta en coche entre esos dos puntos.' : 'No se pudo calcular la ruta. Revisa la conexión e inténtalo otra vez.');
     }
@@ -1120,6 +1127,7 @@
   }
 
   function startNav() {
+    setTimeout(drawParking, 0);
     const r = selectedRoute();
     if (!r || !st.dest) return;
     closePlanner(false);
@@ -1130,6 +1138,13 @@
     $('#maneuver').hidden = false; $('#navbar').hidden = false; $('#arrived').hidden = true;
     $('#gasBtn').hidden = true; $('#voiceBtn').hidden = false; renderVoiceBtn();
     $('#cheapPill').hidden = true;
+    setTimeout(() => {
+      const f = refuelPlan(r), tips = [];
+      if (f && !f.ok && f.best) tips.push(`Te conviene repostar en ${V.brandName(f.best.s.brand)}, en el kilómetro ${Math.round(f.best.along / 1000)} de la ruta, a ${fmt.price(f.best.p)} €/L.`);
+      else if (f && f.none) tips.push('Ojo: no te llega la gasolina y no hay gasolineras en el camino. Reposta antes.');
+      if (r.zbe && r.zbe.length) tips.push(`La ruta pasa por la zona de bajas emisiones de ${r.zbe[0]}. ${zbeAdvice()}`);
+      if (tips.length) { notice(tips.join(' '), 12000); if (wantAlerts()) say(tips.join(' ')); }
+    }, 4500);
     drawRoutes(); drawStations(); drawRadars();
     keepAwake();
     if (st.speed > 5 && st.heading != null) dispBearing = st.heading;   // hacia donde vas de verdad
@@ -1166,6 +1181,7 @@
     camZoom = null;
     setFollow(true);
     renderCheap();
+    drawParking();
   }
 
   function updateNav(lat, lon) {
@@ -1371,10 +1387,12 @@
     $('#chips').innerHTML =
       `<button class="chip chip-filter" type="button" data-open="layers">${ic('i-sliders')}Filtrar${hidden ? `<span class="count">${hidden}</span>` : ''}</button>` +
       LAYERS.map(l =>
-        `<button class="chip" role="tab" type="button" data-layer="${l.k}" aria-selected="${S.layer === l.k}">${ic(l.icon)}${l.label}</button>`).join('');
+        `<button class="chip" role="tab" type="button" data-layer="${l.k}" aria-selected="${S.layer === l.k}">${ic(l.icon)}${l.label}</button>`).join('') +
+      `<button class="chip" type="button" data-open="group">${ic('i-me')}Juntos</button>`;
   }
   $('#chips').addEventListener('click', e => {
     if (e.target.closest('[data-open="layers"]')) { openLayers(); return; }
+    if (e.target.closest('[data-open="group"]')) { openGroup(); return; }
     const b = e.target.closest('[data-layer]');
     if (!b) return;
     S.layer = b.dataset.layer; saveS();
@@ -1665,7 +1683,9 @@
         </div>
       </button>`; }).join('');
     if (sel) {
+      html += refuelLine(sel) + zbeLine(sel);
       html += `<button class="btn-grad" type="button" data-act="go">${ic('i-locate')}Iniciar navegación</button>`;
+      if (Group.code) html += `<button class="btn-ghost" type="button" data-act="sendgroup">Enviar este destino al grupo</button>`;
       html += `<p class="fine">Consumo estimado con ${fmt.liters(S.consumption)}/100 km y ${V.FUELS.find(f => f.key === S.fuel).label} a ${fmt.price(sel.price)} €/L (media de las gasolineras más baratas cerca). El precio del peaje no se incluye.</p>`;
     }
     $('#plannerBody').innerHTML = html;
@@ -1677,10 +1697,12 @@
     if (t.dataset.act === 'close') { closePlanner(true); return; }
     if (t.dataset.act === 'retry') { planRoute(); return; }
     if (t.dataset.act === 'go') { startNav(); return; }
+    if (t.dataset.station) { openStation(t.dataset.station); return; }
+    if (t.dataset.act === 'sendgroup' && st.dest) { Group.send({ t: 'dest', name: st.dest.name, sub: st.dest.sub || '', la: st.dest.lat, lo: st.dest.lon }); toast('Destino enviado al grupo'); return; }
     if (t.dataset.toll) { S.tolls = t.dataset.toll; saveS(); st.selectedId = visibleRoutes()[0]?.id; }
     if (t.dataset.crit) { S.criterion = t.dataset.crit; saveS(); st.selectedId = visibleRoutes()[0]?.id; }
     if (t.dataset.route) st.selectedId = t.dataset.route;
-    drawRoutes(); renderPlanner();
+    drawRoutes(); renderPlanner(); annotateRoutes();
     const sel = selectedRoute(); if (sel && (t.dataset.toll || t.dataset.crit || t.dataset.route)) fitRoute(sel);
   });
 
@@ -1778,6 +1800,8 @@
     const m = Math.round((now() - t) / 60000);
     if (m < 1) return 'hace un momento';
     if (m < 60) return `hace ${m} min`;
+    if (m >= 2880) return `hace ${Math.round(m / 1440)} días`;
+    if (m >= 1440) return 'hace 1 día';
     return `hace ${Math.floor(m / 60)} h ${m % 60} min`;
   }
 
@@ -1830,8 +1854,10 @@
     openSheet('report', '¿Qué hay aquí?', `
       <p class="fine" style="margin:0">Se comparte al momento con los demás conductores que usan tu Vigía. Hazlo como copiloto o con el coche parado.</p>
       <div class="tiles">${kinds.map(k => `<button class="tile" type="button" data-kind="${k}" style="--c:${V.KINDS[k].color}">${ic(KIND_ICON[k])}${V.KINDS[k].short}</button>`).join('')}</div>
-      ${myReportsHtml()}`);
+      ${myReportsHtml()}
+      ${levelHtml()}`);
     $('#sheetBody').onclick = async e => {
+      if (e.target.closest('[data-act="ranking"]')) { openRanking(); return; }
       const b = e.target.closest('[data-kind]'); if (b) { report(b.dataset.kind); return; }
       const d = e.target.closest('[data-del]');
       if (d) { d.disabled = true; if (await deleteReport(d.dataset.del)) openReport(); else d.disabled = false; }
@@ -1957,6 +1983,11 @@
         <div class="opt col"><span class="lbl">Color</span><div class="me-colors">${ME_COLORS.map(([c, n]) => `<button type="button" data-mecolor="${c}" aria-label="${n}" aria-pressed="${S.meColor === c}" style="--c:${c}"></button>`).join('')}</div></div>
         <div class="opt col"><span class="lbl">Tamaño</span><div class="seg" id="meSizeSeg">${[['s', 'Pequeño'], ['m', 'Normal'], ['l', 'Grande']].map(([k, l]) => `<button type="button" data-mesize="${k}" aria-pressed="${S.meSize === k}">${l}</button>`).join('')}</div></div>
       </div>
+      <div class="section-label">Comunidad</div>
+      <div class="group">
+        <button type="button" class="opt car-row" data-act="group">${ic('i-me')}<span class="lbl">Viajar juntos y modo copiloto<small>${Group.code ? 'Estás en un grupo' : 'Ved dónde está cada uno y mandaos destinos'}</small></span><span class="chev">›</span></button>
+        <button type="button" class="opt car-row" data-act="ranking">${ic('i-alert')}<span class="lbl">Avisadores<small>Tu nivel: ${levelOf(myPoints()).L[1]} · ranking de hoy</small></span><span class="chev">›</span></button>
+      </div>
       <div class="section-label">Rutas</div>
       <div class="group">
         ${sel('tolls', 'Peajes', [['avoid', 'Sin peajes'], ['any', 'Con peajes']])}
@@ -1984,6 +2015,8 @@
       if (!t) return;
       if (t.dataset.act === 'car') return openCar();
       if (onMapPickerClick(t)) return;
+      if (t.dataset.act === 'group') return openGroup();
+      if (t.dataset.act === 'ranking') return openRanking();
       if (t.dataset.me || t.dataset.mecolor || t.dataset.mesize) {
         if (t.dataset.me) S.meStyle = t.dataset.me;
         if (t.dataset.mecolor) S.meColor = t.dataset.mecolor;
@@ -2154,21 +2187,23 @@
   const extLink = (href, label, icon = 'i-search') => `<a class="opt car-row car-link" href="${esc(href)}" target="_blank" rel="noopener">${ic(icon)}<span class="lbl">${label}</span><span class="chev">↗</span></a>`;
 
   function carHtml() {
-    const tabs = [['maint', 'Revisiones'], ['fuel', 'Gasolina'], ['docs', 'Papeles'], ['info', 'Ficha']];
+    const tabs = [['trips', 'Viajes'], ['maint', 'Revisiones'], ['fuel', 'Gasolina'], ['docs', 'Papeles'], ['info', 'Ficha']];
     const alerts = carAlerts();
     let html = `<div class="car-head">${ic('i-car')}<div><b>${esc(carName())}</b><div class="fine">${esc(carSub())}${P().plate ? ` · ${esc(P().plate)}` : ''}</div></div>
       <button type="button" class="car-km" data-act="km"><small>Kilómetros</small><b>${car.km != null ? kmFmt(car.km) : 'Apuntar'}</b></button></div>
       ${alerts.length ? `<div class="car-alert">${ic('i-alert')}<span>${alerts.slice(0, 3).map(a => `<b>${esc(a.name)}</b>: ${esc(a.s.text.toLowerCase())}`).join(' · ')}${alerts.length > 3 ? ` y ${alerts.length - 3} más` : ''}</span></div>` : ''}
       <div class="seg" id="carTabs">${tabs.map(([k, l]) => `<button type="button" data-tab="${k}" aria-pressed="${car.tab === k}">${l}</button>`).join('')}</div>`;
 
-    if (car.tab === 'maint') {
+    if (car.tab === 'trips') {
+      html += tripsHtml();
+    } else if (car.tab === 'maint') {
       html += `<div class="group">${maintList().map(it => { const s = maintStatus(it); return `<button type="button" class="opt car-row" data-maint="${it.k}">
         <span class="lbl">${esc(it.name)}<small>${esc(s.sub)}</small></span>${lvlPill(s)}</button>`; }).join('')}</div>
         <p class="fine">Intervalos orientativos para un coche ${isDiesel() ? 'diésel' : 'de gasolina'}. Si en el taller o en el libro del coche pone otra cosa, manda eso.</p>`;
     } else if (car.tab === 'fuel') {
       const fs = fuelStats(), cheap = cheapestNear();
       const p = cheap ? cheap.s.prices[P().fuel] : null;
-      html += `<div class="car-stats">
+      html += fuelGaugeHtml() + `<div class="car-stats">
           <div><small>Consumo real</small><b>${fs.realCons ? fmt.liters(fs.realCons) : '—'}</b><small>${fs.realCons ? 'cada 100 km' : 'Apunta 2 repostajes con km'}</small></div>
           <div><small>Este mes</small><b>${fmt.eur(fs.monthEur)}</b><small>${fmt.liters(fs.monthL)}</small></div>
           <div><small>Este año</small><b>${fmt.eur(fs.yearEur)}</b><small>${car.fills.length} repostajes</small></div>
@@ -2180,6 +2215,7 @@
           <label class="opt"><span class="lbl">Total pagado (€)</span><input name="euros" type="number" inputmode="decimal" step="0.01" min="1" required placeholder="52,40"></label>
           <label class="opt"><span class="lbl">Km del coche<small>Para calcular el consumo real</small></span><input name="km" type="number" inputmode="numeric" min="0" placeholder="${car.km ?? '185000'}"></label>
           <label class="opt"><span class="lbl">Fecha</span><input name="date" type="date" value="${todayISO()}" required></label>
+          <label class="opt"><span class="lbl">He llenado el depósito<small>Hasta que salta la pistola</small></span><span class="switch"><input type="checkbox" name="full" checked><span></span></span></label>
         </form>
         <button type="button" class="btn-grad" data-act="addFill">${ic('i-fuel')}Guardar repostaje</button>
         <p class="fine">Llena el depósito hasta que salte la pistola cada vez: así el consumo real sale bien. Cuando lo tenga, Vigía lo usa para calcular lo que gastas en cada ruta.</p>
@@ -2234,6 +2270,7 @@
     openSheet('car', 'Mi coche', carHtml());
     const body = $('#sheetBody');
     body.onchange = async e => {
+      if (e.target.dataset.set) return onSettingChange(e);
       if (e.target.id === 'repFile' && e.target.files[0]) return addReport(e.target.files[0]);
       if (e.target.id === 'impFile' && e.target.files[0]) return importCar(e.target.files[0]);
     };
@@ -2241,6 +2278,7 @@
       const t = e.target.closest('button');
       if (!t) return;
       if (t.dataset.tab) { car.tab = t.dataset.tab; saveCar(); return openCar(); }
+      if (onTripsClick(t)) return;
       if (t.dataset.act === 'km') return editKm();
       if (t.dataset.act === 'editCar') return editCar();
       if (t.dataset.act === 'addItv') return addItv();
@@ -2248,7 +2286,7 @@
       if (t.dataset.maint) return editMaint(maintList().find(x => x.k === t.dataset.maint));
       if (t.dataset.doc) return editDoc(DOCS.find(x => x.k === t.dataset.doc));
       if (t.dataset.station) return openStation(t.dataset.station);
-      if (t.dataset.openrep) return openReport(t.dataset.openrep);
+      if (t.dataset.openrep) return openPdfReport(t.dataset.openrep);
       if (t.dataset.delrep) {
         const r = car.reports.find(x => x.id === t.dataset.delrep);
         if (!confirm(`¿Borrar «${r.name}» de Vigía?`)) return;
@@ -2273,7 +2311,9 @@
         const v = n => form.elements[n].value.trim().replace(',', '.');
         const liters = +v('liters'), euros = +v('euros'), km = v('km') === '' ? null : Math.round(+v('km'));
         if (km != null && car.km != null && km + 5000 < car.km) { toast('Esos km son menores que los del coche. Revísalos.'); return; }
-        car.fills.push({ id: newId(), date: v('date'), liters, euros, km });
+        const full = form.elements.full.checked;
+        car.fills.push({ id: newId(), date: v('date'), liters, euros, km, full });
+        if (full) setFuelLevel(tankL()); else if (car.fuelLevel) setFuelLevel(fuelLeft() + liters);
         if (km != null && (car.km == null || km > car.km)) car.km = km;
         saveCar(); applyRealConsumption(); openCar();
         toast(`Guardado: ${fmt.liters(liters)} a ${fmt.price(euros / liters)} €/L`);
@@ -2296,7 +2336,7 @@
       toast('Informe guardado. Pasa los datos de ITV a «Historial de ITV»');
     } catch { toast('No se pudo guardar el PDF en este iPhone'); }
   }
-  async function openReport(id) {
+  async function openPdfReport(id) {
     try {
       const f = await Files.get(id);
       if (!f) { toast('Este informe ya no está guardado en este iPhone'); return; }
@@ -2431,9 +2471,528 @@
   }
   function carStartupNotice() {
     const a = carAlerts();
-    if (!a.length) return;
+    if (!a.length) { lowFuelCheck(); return; }
     notice(`Mi coche · ${a.slice(0, 2).map(x => `${x.name}: ${x.s.text.toLowerCase()}`).join(' · ')}${a.length > 2 ? ` y ${a.length - 2} más` : ''}. Tócalo en el botón del coche.`, 9000);
   }
+
+
+  // ---------- Diario de viajes, km y gasolina automáticos ----------
+  // Con Vigía abierta, cada vez que el coche se mueve se graba un viaje: km, tiempo, velocidad,
+  // frenazos y acelerones. Al terminar, suma los km al cuentakilómetros, resta la gasolina
+  // gastada del depósito y guarda dónde has aparcado. (iOS no deja a una web usar el GPS con la app cerrada.)
+  car.fuelLevel = car.fuelLevel || null;   // { liters, t }
+  car.parking = car.parking || null;       // { lat, lon, t }
+  const tripsAll = () => store.get('trips', []);
+  const saveTrips = list => store.set('trips', list.slice(-600));
+  const tankL = () => P().tank || 50;
+  const fuelLeft = () => car.fuelLevel ? Math.max(0, Math.min(tankL(), car.fuelLevel.liters)) : null;
+  const rangeKm = () => fuelLeft() == null ? null : fuelLeft() / S.consumption * 100;
+  function setFuelLevel(liters) { car.fuelLevel = { liters: Math.max(0, Math.min(tankL(), liters)), t: now() }; saveCar(); }
+
+  const Trips = {
+    cur: null, lastWarn: 0, recent: [], mode: 'still',
+    // ¿Qué estás haciendo? Con la velocidad de los últimos segundos:
+    //  · parado: casi 0 · andando: hasta 7 km/h · corriendo: de 7 a 20 km/h, o un acelerón desde andar
+    //  · en coche: más de 10 km/h durante 20 s y llegando a 20 km/h, o más de 30 km/h varias lecturas seguidas
+    classify(t) {
+      const R = this.recent, win = R.filter(x => t - x.t <= 22000), last3 = R.slice(-3);
+      const span = win.length ? t - win[0].t : 0;
+      const allOver10 = win.length >= 3 && win.filter(x => x.v <= 2.8).length <= 1;
+      const peak = Math.max(0, ...win.map(x => x.v));
+      if ((span >= 18000 && allOver10 && peak > 5.6) || (last3.length === 3 && last3.every(x => x.v > 8.3))) return 'car';
+      const v = R.length ? R[R.length - 1].v : 0;
+      if (this.mode === 'car' && v > 2.8) return 'car';        // sigues en coche (atasco lento, rotonda…)
+      if (v < 0.5) return 'still';
+      const prev = R.slice(-6, -1), wasWalking = prev.length && prev.every(x => x.v < 1.9);
+      if (v >= 1.9 || (wasWalking && v - prev[prev.length - 1].v > 1.2)) return 'run';
+      return 'walk';
+    },
+    onFix(lat, lon, acc, v, t) {
+      if (S.autoTrips === false || acc > 45) return;
+      this.recent.push({ t, v, lat, lon }); this.recent = this.recent.filter(x => t - x.t <= 40000);
+      this.mode = this.classify(t);
+      const c = this.cur;
+      if (!c) {
+        if (this.mode !== 'car') return;
+        // El viaje empieza donde arrancaste: el primer punto de esta racha por encima de 10 km/h.
+        let i = this.recent.length - 1; while (i > 0 && this.recent[i - 1].v > 2.8) i--;
+        const first = this.recent[i];
+        this.cand = { lat: first.lat, lon: first.lon, t: first.t };
+        this.cur = { id: 't' + t.toString(36), start: this.cand.t, from: { lat: this.cand.lat, lon: this.cand.lon },
+          last: { lat, lon, t, v }, dist: V.haversine(this.cand.lat, this.cand.lon, lat, lon), moving: 0, maxV: v,
+          brakes: 0, accels: 0, lastEvt: 0, lastMove: t, lastDrive: t, driveDist: 0, park: { lat, lon }, pts: [[+lon.toFixed(5), +lat.toFixed(5)]], ptDist: 0, dest: st.dest ? st.dest.name : null };
+        this.cand = null; this.persist();
+        return;
+      }
+      const L = c.last, dt = (t - L.t) / 1000;
+      if (dt <= 0) return;
+      const d = V.haversine(L.lat, L.lon, lat, lon);
+      if (d / dt > 70) return;   // salto imposible del GPS
+      if (d > Math.max(3, acc * 0.3)) { c.dist += d; c.ptDist += d; L.lat = lat; L.lon = lon; }
+      if (v > 1.5) { c.moving += dt * 1000; c.lastMove = t; }
+      if (this.mode === 'car') { c.lastDrive = t; c.driveDist = c.dist; c.park = { lat, lon }; }   // andar o correr no cuenta
+      c.maxV = Math.max(c.maxV, v);
+      if (dt >= 1 && dt <= 5 && t - c.lastEvt > 6000) {
+        const a = (v - L.v) / dt;
+        if (a < -3.4) { c.brakes++; c.lastEvt = t; }
+        else if (a > 2.8 && L.v > 2) { c.accels++; c.lastEvt = t; }
+      }
+      L.v = v; L.t = t;
+      if (c.ptDist > 150 && c.pts.length < 400) { c.pts.push([+lon.toFixed(5), +lat.toFixed(5)]); c.ptDist = 0; }
+      if (st.dest && !c.dest) c.dest = st.dest.name;
+      if (t - (c.saved || 0) > 15000) { c.saved = t; this.persist(); }
+    },
+    persist() { store.set('tripCur', this.cur); },
+    // Parado más de 4 minutos = fin del viaje.
+    tick() { if (this.cur && now() - (this.cur.lastDrive || this.cur.lastMove) > 5 * 60e3) this.finish(); },
+    finish(reason) {
+      const c = this.cur; this.cur = null; store.set('tripCur', null);
+      // Lo que hiciste andando después de aparcar no cuenta: el viaje acaba en el último punto en coche.
+      if (c && c.driveDist != null) { c.dist = c.driveDist; if (c.park) { c.last.lat = c.park.lat; c.last.lon = c.park.lon; } }
+      if (!c || c.dist < 500) return null;
+      const end = c.lastDrive || Math.max(c.lastMove, c.last.t);
+      const km = c.dist / 1000, movingS = Math.max(60, c.moving / 1000);
+      const liters = V.fuelLiters(c.dist, movingS, S.consumption);
+      const price = refPrice(c.last.lat, c.last.lon);
+      const trip = { id: c.id, start: c.start, end, km: Math.round(km * 10) / 10, moving: Math.round(movingS),
+        maxKmh: Math.round(c.maxV * 3.6), brakes: c.brakes, accels: c.accels, score: driveScore(km, c.brakes, c.accels),
+        liters: Math.round(liters * 100) / 100, eur: Math.round(liters * price * 100) / 100,
+        from: c.from, to: { lat: c.last.lat, lon: c.last.lon }, dest: c.dest || null, pts: c.pts };
+      const list = tripsAll(); list.push(trip); saveTrips(list);
+      // Cuentakilómetros y depósito
+      if (car.km != null) car.km = Math.round(car.km + km);
+      if (car.fuelLevel) car.fuelLevel = { liters: Math.max(0, car.fuelLevel.liters - liters), t: now() };
+      car.parking = { lat: c.last.lat, lon: c.last.lon, t: end };
+      saveCar(); drawParking();
+      if (reason !== 'silent') {
+        toast(`Viaje guardado: ${fmt.dist(c.dist)} · nota ${trip.score}`, { label: 'Ver', fn: () => { car.tab = 'trips'; openCar(); } });
+        setTimeout(lowFuelCheck, 2500);
+      }
+      return trip;
+    },
+    restore() {
+      const c = store.get('tripCur', null);
+      if (!c) return;
+      if (now() - c.last.t < 10 * 60e3) this.cur = c;   // la app se cerró un momento: sigue el mismo viaje
+      else { this.cur = c; this.finish('silent'); }
+    },
+  };
+  function driveScore(km, brakes, accels) {
+    const per10 = (brakes * 7 + accels * 4) * 10 / Math.max(5, km);
+    return Math.max(0, Math.min(100, Math.round(100 - per10)));
+  }
+  const scoreWord = s => s >= 90 ? 'Muy suave' : s >= 75 ? 'Suave' : s >= 55 ? 'Normal' : 'Brusca';
+  addEventListener('pagehide', () => Trips.persist());
+  document.addEventListener('visibilitychange', () => { if (document.hidden) Trips.persist(); });
+  setInterval(() => Trips.tick(), 30e3);
+
+  // Aviso de poca gasolina, con la gasolinera más barata cerca.
+  function lowFuelCheck() {
+    const r = rangeKm();
+    if (r == null || r > 80 || now() - Trips.lastWarn < 20 * 60e3) return;
+    Trips.lastWarn = now();
+    const cheap = cheapestNear();
+    notice(`Te quedan unos ${Math.max(0, Math.round(r / 10) * 10)} km de gasolina.` +
+      (cheap ? ` La más barata cerca: ${V.brandName(cheap.s.brand)} a ${fmt.dist(cheap.d)}, ${fmt.price(cheap.s.prices[P().fuel])} €/L.` : ''), 10000);
+  }
+
+  // ---- Dónde aparqué ----
+  const parkEl = document.createElement('button');
+  parkEl.type = 'button'; parkEl.className = 'park-pin'; parkEl.setAttribute('aria-label', 'Tu coche aparcado');
+  parkEl.innerHTML = '<span>P</span>';
+  parkEl.addEventListener('click', e => { e.stopPropagation(); openParking(); });
+  const parkMarker = new maplibregl.Marker({ element: parkEl, anchor: 'bottom' });
+  let parkShown = false;
+  function drawParking() {
+    const p = car.parking;
+    if (p && !st.nav) { parkMarker.setLngLat([p.lon, p.lat]); if (!parkShown) { parkMarker.addTo(map); parkShown = true; } }
+    else if (parkShown) { parkMarker.remove(); parkShown = false; }
+  }
+  const walkUrl = p => `https://maps.apple.com/?daddr=${p.lat},${p.lon}&dirflg=w`;
+  function openParking() {
+    const p = car.parking; if (!p) return;
+    const d = st.pos ? V.haversine(st.pos.lat, st.pos.lon, p.lat, p.lon) : null;
+    openSheet('parking', 'Tu coche', `
+      <div class="car-head">${ic('i-car')}<div><b>Aparcado ${relTime(p.t)}</b><div class="fine">${d != null ? `A ${fmt.dist(d)} de ti` : 'Guardado al terminar tu último viaje'}</div></div></div>
+      <a class="btn-grad" href="${walkUrl(p)}" target="_blank" rel="noopener">${ic('i-locate')}Llevarme andando</a>
+      <div class="btns"><button type="button" class="btn-ghost" data-act="center">Ver en el mapa</button><button type="button" class="btn-ghost" data-act="got">Ya lo tengo</button></div>`);
+    $('#sheetBody').onchange = null;
+    $('#sheetBody').onclick = e => {
+      const t = e.target.closest('button'); if (!t) return;
+      if (t.dataset.act === 'center') { closeSheet(); setFollow(false); map.flyTo({ center: [p.lon, p.lat], zoom: 17, duration: 900 }); }
+      if (t.dataset.act === 'got') { car.parking = null; saveCar(); drawParking(); closeSheet(); toast('Aparcamiento borrado'); }
+    };
+  }
+
+  // ---- Pestaña «Viajes» de Mi coche ----
+  let tripMonth = todayISO().slice(0, 7);
+  const monthName = ym => new Date(ym + '-15T12:00:00').toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+  const shiftMonth = (ym, n) => { const d = new Date(ym + '-15T12:00:00'); d.setMonth(d.getMonth() + n); return d.toISOString().slice(0, 7); };
+  const ymOf = ms => { const d = new Date(ms); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
+  const hm = s => { const m = Math.round(s / 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+
+  function fuelGaugeHtml() {
+    const l = fuelLeft();
+    if (l == null) return `<div class="group"><div class="opt col"><span class="lbl">¿Cuánta gasolina tienes ahora?<small>Dímelo una vez y Vigía la irá descontando sola con cada viaje</small></span>
+      <div class="seg fuel-set">${[['0.12', 'Reserva'], ['0.25', '¼'], ['0.5', '½'], ['0.75', '¾'], ['1', 'Lleno']].map(([f, n]) => `<button type="button" data-fuelset="${f}">${n}</button>`).join('')}</div></div></div>`;
+    const pct = l / tankL(), r = rangeKm();
+    const lvl = pct < 0.15 ? 'late' : pct < 0.3 ? 'soon' : 'ok';
+    return `<div class="fuel-gauge ${lvl}"><div class="fg-top"><div><small>En el depósito</small><b>${fmt.liters(l)}</b></div>
+        <div class="fg-r"><small>Te da para</small><b>unos ${Math.round(r / 10) * 10} km</b></div></div>
+      <div class="fg-bar"><span style="width:${Math.round(pct * 100)}%"></span></div>
+      <div class="seg fuel-set">${[['0.12', 'Reserva'], ['0.25', '¼'], ['0.5', '½'], ['0.75', '¾'], ['1', 'Lleno']].map(([f, n]) => `<button type="button" data-fuelset="${f}">${n}</button>`).join('')}</div>
+      <small class="fg-note">Se descuenta sola con cada viaje. Si no cuadra con la aguja, toca el nivel real.</small></div>`;
+  }
+
+  function tripsHtml() {
+    const all = tripsAll();
+    const month = all.filter(x => ymOf(x.start) === tripMonth);
+    const km = month.reduce((a, x) => a + x.km, 0), secs = month.reduce((a, x) => a + x.moving, 0);
+    const eur = month.reduce((a, x) => a + (x.eur || 0), 0);
+    const avgScore = month.length ? Math.round(month.reduce((a, x) => a + x.score * x.km, 0) / Math.max(0.1, km)) : null;
+    const longest = month.reduce((a, x) => (!a || x.km > a.km ? x : a), null);
+    const top = month.reduce((a, x) => Math.max(a, x.maxKmh || 0), 0);
+    const nowYm = todayISO().slice(0, 7);
+    let html = `<div class="wrap-card">
+        <div class="wrap-nav"><button type="button" class="icon-plain" data-month="-1" aria-label="Mes anterior">‹</button>
+          <span>Tu ${esc(monthName(tripMonth))}</span>
+          <button type="button" class="icon-plain" data-month="1" aria-label="Mes siguiente" ${tripMonth >= nowYm ? 'disabled' : ''}>›</button></div>
+        ${month.length ? `<div class="wrap-big">${Math.round(km).toLocaleString('es-ES')}<small>km</small></div>
+        <div class="wrap-grid">
+          <div><b>${month.length}</b><small>viajes</small></div>
+          <div><b>${hm(secs)}</b><small>al volante</small></div>
+          <div><b>${fmt.eur(eur)}</b><small>de gasolina (aprox.)</small></div>
+          <div><b>${avgScore}</b><small>nota de conducción · ${scoreWord(avgScore)}</small></div>
+          <div><b>${fmt.dist(longest.km * 1000)}</b><small>tu viaje más largo</small></div>
+          <div><b>${top} km/h</b><small>velocidad máxima</small></div>
+        </div>` : `<p class="wrap-empty">${tripMonth === nowYm ? 'Aún no hay viajes este mes. Abre Vigía al conducir y se grabarán solos.' : 'No hubo viajes este mes.'}</p>`}
+      </div>`;
+    if (car.parking) html += `<button type="button" class="opt car-row park-row" data-act="parking">${ic('i-pin')}<span class="lbl">Dónde aparqué<small>Hace ${relTime(car.parking.t).replace(/^hace /, '')}${st.pos ? ' · a ' + fmt.dist(V.haversine(st.pos.lat, st.pos.lon, car.parking.lat, car.parking.lon)) : ''}</small></span><span class="chev">›</span></button>`;
+    if (st.pos) html += `<button type="button" class="btn-ghost" data-act="parkHere">${ic('i-pin')} He aparcado aquí</button>`;
+    if (Trips.cur) html += `<div class="rec-row"><span class="rec-dot"></span>Grabando viaje · ${fmt.dist(Trips.cur.driveDist || Trips.cur.dist)}</div>`;
+    else if (st.pos) html += `<div class="mode-row">Ahora mismo: <b>${{ still: 'parado', walk: 'andando', run: 'corriendo', car: 'en coche' }[Trips.mode]}</b></div>`;
+    const recent = all.slice().reverse().filter(x => ymOf(x.start) === tripMonth).slice(0, 40);
+    if (recent.length) {
+      html += `<div class="section-label">Viajes</div><div class="group">${recent.map(x => {
+        const d = new Date(x.start);
+        const when = d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' }) + ' · ' + d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+        return `<div class="opt"><span class="score-ring s${x.score >= 75 ? 'ok' : x.score >= 55 ? 'mid' : 'bad'}">${x.score}</span>
+          <span class="lbl">${x.dest ? esc(x.dest) : fmt.dist(x.km * 1000)}<small>${when} · ${x.dest ? fmt.dist(x.km * 1000) + ' · ' : ''}${hm(x.moving)}${x.brakes + x.accels ? ` · ${x.brakes} frenazo${x.brakes === 1 ? '' : 's'}, ${x.accels} ${x.accels === 1 ? 'acelerón' : 'acelerones'}` : ''}</small></span>
+          <button type="button" class="icon-plain car-del" data-deltrip="${x.id}" aria-label="Borrar viaje">${ic('i-x')}</button></div>`;
+      }).join('')}</div>`;
+    }
+    html += `<div class="group">${sw('autoTrips', 'Grabar viajes automáticamente', 'Suma los km y descuenta la gasolina sola')}</div>
+      <p class="fine">Funciona con Vigía abierta: el iPhone no deja que una web use la ubicación con la app cerrada. Llévala delante en el soporte. La nota baja con frenazos y acelerones fuertes.</p>`;
+    return html;
+  }
+  function onTripsClick(t) {
+    if (t.dataset.month) { const n = shiftMonth(tripMonth, +t.dataset.month); if (n <= todayISO().slice(0, 7)) tripMonth = n; openCar(); return true; }
+    if (t.dataset.act === 'parking') { openParking(); return true; }
+    if (t.dataset.act === 'parkHere' && st.pos) { car.parking = { lat: st.pos.lat, lon: st.pos.lon, t: now() }; saveCar(); drawParking(); openCar(); toast('Aparcamiento guardado'); return true; }
+    if (t.dataset.fuelset) { setFuelLevel(tankL() * +t.dataset.fuelset); openCar(); toast(`Depósito: ${fmt.liters(fuelLeft())}`); return true; }
+    if (t.dataset.deltrip) {
+      const list = tripsAll(), x = list.find(i => i.id === t.dataset.deltrip);
+      saveTrips(list.filter(i => i !== x)); openCar();
+      toast('Viaje borrado', { label: 'Deshacer', fn: () => { const l = tripsAll(); l.push(x); l.sort((a, b) => a.start - b.start); saveTrips(l); openCar(); } });
+      return true;
+    }
+    return false;
+  }
+  Trips.restore();
+
+  // ---------- ¿Cuándo reposto? ----------
+  // Con la gasolina que te queda, busca la gasolinera más barata a menos de 1,2 km de tu ruta
+  // a la que llegas con margen.
+  function refuelPlan(route) {
+    if (route._refuel !== undefined && route._refuelAt === (car.fuelLevel && car.fuelLevel.t)) return route._refuel;
+    route._refuelAt = car.fuelLevel && car.fuelLevel.t;
+    const r = rangeKm();
+    if (r == null) return (route._refuel = null);
+    const total = route.distance / 1000;
+    if (r - total > 50) return (route._refuel = { ok: true, left: r - total });
+    const fuel = P().fuel, line = route.line, [a, b, c, d] = line.bbox, m = 0.02;
+    const maxAlong = Math.max(0, (r - 20) * 1000), cands = [];
+    for (const s of st.stations) {
+      const p = s.prices[fuel];
+      if (p == null || s.lon < a - m || s.lon > c + m || s.lat < b - m || s.lat > d + m) continue;
+      const pr = V.project(line, s.lat, s.lon);
+      if (pr.dist < 1200 && pr.along <= maxAlong) cands.push({ s, p, along: pr.along });
+    }
+    if (!cands.length) return (route._refuel = { ok: false, none: true, range: r });
+    cands.sort((x, y) => x.p - y.p || y.along - x.along);
+    const best = cands[0], avg = cands.reduce((s2, x) => s2 + x.p, 0) / cands.length;
+    const liters = Math.max(5, tankL() - Math.max(0, fuelLeft() - best.along / 1000 * S.consumption / 100));
+    return (route._refuel = { ok: false, best, save: Math.max(0, (avg - best.p) * liters), liters, range: r });
+  }
+  function refuelLine(route) {
+    const f = refuelPlan(route);
+    if (!f) return '';
+    if (f.ok) return `<div class="refuel ok">${ic('i-fuel')}<span>No hace falta repostar: llegarás con gasolina para unos ${Math.round(f.left / 10) * 10} km</span></div>`;
+    if (f.none) return `<div class="refuel bad">${ic('i-fuel')}<span>Te da para unos ${Math.round(f.range)} km y no hay gasolineras en el camino a tu alcance. Reposta antes de salir.</span></div>`;
+    return `<button type="button" class="refuel warn" data-station="${esc(f.best.s.id)}">${ic('i-fuel')}<span><b>Reposta en ${esc(V.brandName(f.best.s.brand))}</b>, en el km ${Math.round(f.best.along / 1000)} de la ruta · ${fmt.price(f.best.p)} €/L${f.save >= 0.5 ? ` · ahorras unos ${fmt.eur(f.save)}` : ''}</span></button>`;
+  }
+
+  // ---------- Zonas de bajas emisiones (ZBE) ----------
+  // Las zonas salen de OpenStreetMap. Las normas cambian según la ciudad, así que solo avisa.
+  const zbeCache = new Map();
+  async function zbeZones(bbox) {
+    const [a, b, c, d] = bbox.map(x => +x.toFixed(2));
+    const key = [a, b, c, d].join(',');
+    if (zbeCache.has(key)) return zbeCache.get(key);
+    const q = `[out:json][timeout:25];(relation["boundary"="low_emission_zone"](${b},${a},${d},${c});way["boundary"="low_emission_zone"](${b},${a},${d},${c}););out geom;`;
+    for (const base of CONFIG.overpassList) {
+      try {
+        const r = await fetchTimeout(`${base}?data=${encodeURIComponent(q)}`, 30000);
+        if (!r.ok) continue;
+        const j = await r.json();
+        const zones = (j.elements || []).map(e => {
+          const ways = e.type === 'way' ? [e.geometry] : (e.members || []).filter(mm => mm.type === 'way' && mm.role !== 'inner' && mm.geometry).map(mm => mm.geometry);
+          const rings = joinRings(ways.map(g => g.map(p => [p.lon, p.lat])));
+          const tags = e.tags || {};
+          return { name: tags.name || tags['name:es'] || 'Zona de bajas emisiones', rings };
+        }).filter(z => z.rings.length);
+        zbeCache.set(key, zones);
+        return zones;
+      } catch { /* siguiente servidor */ }
+    }
+    return [];
+  }
+  function joinRings(parts) {
+    const rings = [], open = parts.map(p => p.slice());
+    while (open.length) {
+      let ring = open.shift();
+      let guard = 0;
+      while ((ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) && guard++ < 500) {
+        const end = ring[ring.length - 1];
+        const i = open.findIndex(p => (p[0][0] === end[0] && p[0][1] === end[1]) || (p[p.length - 1][0] === end[0] && p[p.length - 1][1] === end[1]));
+        if (i < 0) break;
+        const nx = open.splice(i, 1)[0];
+        ring = ring.concat(nx[0][0] === end[0] && nx[0][1] === end[1] ? nx.slice(1) : nx.reverse().slice(1));
+      }
+      if (ring.length > 3) rings.push(ring);
+    }
+    return rings;
+  }
+  function inRing(pt, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+  async function checkZbe(route) {
+    if (route.zbe !== undefined) return route.zbe;
+    route.zbe = null;
+    const zones = await zbeZones(route.line.bbox);
+    const coords = route.coords, step = Math.max(1, Math.floor(coords.length / 400)), hits = new Set();
+    for (const z of zones) {
+      for (let i = 0; i < coords.length; i += step) if (z.rings.some(rg => inRing(coords[i], rg))) { hits.add(z.name); break; }
+    }
+    route.zbe = [...hits];
+    return route.zbe;
+  }
+  function zbeAdvice() {
+    const l = P().label;
+    if (l === '0' || l === 'ECO' || l === 'C') return 'Con tu etiqueta puedes entrar sin problema.';
+    if (l === 'B') return 'Con etiqueta B se puede entrar en casi todas, pero algunas limitan el centro o los días de mucha contaminación. Mira las normas de esa ciudad.';
+    if (l === 'none') return 'Sin etiqueta normalmente no puedes entrar y te pueden multar.';
+    return 'Pon tu etiqueta en Mi coche para saber si puedes entrar.';
+  }
+  function zbeLine(route) {
+    if (!route.zbe || !route.zbe.length) return '';
+    const bad = P().label === 'none';
+    return `<div class="refuel ${bad ? 'bad' : 'warn'}">${ic('i-shield')}<span><b>Pasas por ${esc(route.zbe.slice(0, 2).join(' y '))}</b> (zona de bajas emisiones). ${esc(zbeAdvice())}</span></div>`;
+  }
+  async function annotateRoutes() {
+    const sel = selectedRoute(); if (!sel) return;
+    await checkZbe(sel).catch(() => {});
+    renderPlanner();
+  }
+
+  // ---------- Viajar juntos (grupo de amigos y modo copiloto) ----------
+  // Cada uno comparte su posición con el grupo mientras tiene Vigía abierta. Cualquiera puede
+  // mandar un destino al grupo: el copiloto lo busca en su móvil y al conductor le llega para tocar «Ir».
+  const MEMBER_COLORS = ['#FF5CA8', '#FFC83A', '#9B6BFF', '#34D873', '#FF8A3D', '#3D8BFF', '#00E0C6', '#FF4554'];
+  const Group = {
+    code: store.get('group', null), es: null, members: new Map(), markers: new Map(), lastSent: 0,
+    topic() { return 'vigia-g-' + this.code; },
+    name() { return (S.nick || '').trim() || 'Conductor ' + deviceId.slice(0, 3).toUpperCase(); },
+    newCode() { const c = 'abcdefghjkmnpqrstuvwxyz23456789'; let s = ''; for (let i = 0; i < 8; i++) s += c[Math.floor(Math.random() * c.length)]; return s; },
+    join(code) {
+      this.leave(true);
+      this.code = code; store.set('group', code);
+      try {
+        this.es = new EventSource(`${CONFIG.ntfy}/${this.topic()}/sse?since=2m`);
+        this.es.onmessage = ev => { try { const m = JSON.parse(ev.data); if (m.event === 'message') this.onMsg(JSON.parse(m.message)); } catch { /* mensaje raro */ } };
+      } catch { toast('No se pudo conectar con el grupo'); }
+      this.sendPos(true); renderGroupPill();
+    },
+    leave(quiet) {
+      if (this.es) { this.es.close(); this.es = null; }
+      if (this.code && !quiet) this.send({ t: 'bye' });
+      this.markers.forEach(mk => mk.remove()); this.markers.clear(); this.members.clear();
+      if (!quiet) { this.code = null; store.set('group', null); }
+      renderGroupPill();
+    },
+    async send(p) {
+      if (!this.code) return;
+      try { await fetchTimeout(`${CONFIG.ntfy}/`, 12000, { method: 'POST', body: JSON.stringify({ topic: this.topic(), message: JSON.stringify({ ...p, d: deviceId, n: this.name() }) }) }); } catch { /* sin conexión */ }
+    },
+    sendPos(force) {
+      if (!this.code || !st.pos || (!force && now() - this.lastSent < 12000)) return;
+      this.lastSent = now();
+      const n = st.nav, eta = n && n.route.distance > 0 ? Math.round(n.route.duration * Math.max(0, n.route.distance - (n.progress || 0)) / n.route.distance) : null;
+      this.send({ t: 'p', la: +st.pos.lat.toFixed(5), lo: +st.pos.lon.toFixed(5), h: st.heading != null ? Math.round(st.heading) : null,
+        v: Math.round(st.speed), dest: st.nav && st.dest ? st.dest.name : null, eta });
+    },
+    onMsg(p) {
+      if (!p || p.d === deviceId) return;
+      if (p.t === 'bye') { this.drop(p.d); return; }
+      if (p.t === 'p' && Number.isFinite(p.la)) {
+        const m = this.members.get(p.d) || { color: MEMBER_COLORS[this.members.size % MEMBER_COLORS.length] };
+        Object.assign(m, { name: p.n, lat: p.la, lon: p.lo, v: p.v, dest: p.dest, eta: p.eta, t: now() });
+        this.members.set(p.d, m); this.draw(p.d); renderGroupPill();
+      }
+      if (p.t === 'dest' && Number.isFinite(p.la)) {
+        play('near');
+        toast(`${p.n} propone ir a ${p.name}`, { label: 'Ir', fn: () => goTo({ name: p.name, sub: p.sub || '', lat: p.la, lon: p.lo }) });
+      }
+      if (p.t === 'msg') toast(`${p.n}: ${p.text}`);
+    },
+    draw(id) {
+      const m = this.members.get(id); if (!m) return;
+      let mk = this.markers.get(id);
+      if (!mk) {
+        const el = document.createElement('div'); el.className = 'buddy';
+        mk = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([m.lon, m.lat]).addTo(map);
+        this.markers.set(id, mk);
+      }
+      mk.getElement().innerHTML = `<span class="buddy-dot" style="--c:${m.color}">${esc((m.name || '?').trim()[0] || '?').toUpperCase()}</span><span class="buddy-name">${esc(m.name)}${m.v > 5 ? ` · ${m.v} km/h` : ''}</span>`;
+      mk.setLngLat([m.lon, m.lat]);
+    },
+    drop(id) { const mk = this.markers.get(id); if (mk) mk.remove(); this.markers.delete(id); this.members.delete(id); renderGroupPill(); },
+    prune() { for (const [id, m] of this.members) if (now() - m.t > 3 * 60e3) this.drop(id); },
+  };
+  setInterval(() => { Group.sendPos(); Group.prune(); }, 5000);
+  function goTo(dest) {
+    if (st.nav) endNav();
+    st.dest = dest; addRecent(dest); closeSheet(); renderSearchBar();
+    destMarker.setLngLat([dest.lon, dest.lat]).addTo(map);
+    planRoute();
+  }
+  const inviteUrl = () => `${location.origin}${location.pathname}?grupo=${Group.code}`;
+  function renderGroupPill() {
+    let el = $('#groupPill');
+    if (!Group.code) { if (el) el.hidden = true; return; }
+    if (!el) {
+      el = document.createElement('button'); el.id = 'groupPill'; el.type = 'button'; el.className = 'group-pill glass';
+      el.addEventListener('click', openGroup);
+      document.querySelector('.hud-top').appendChild(el);
+    }
+    el.hidden = false;
+    const n = Group.members.size;
+    el.innerHTML = `${ic('i-me')}<span>${n ? `${n + 1} en el grupo` : 'Grupo: esperando a los demás'}</span>`;
+  }
+  function openGroup() {
+    if (!Group.code) {
+      openSheet('group', 'Viajar juntos', `
+        <p class="fine" style="margin:0">Crea un grupo y pasa el enlace por WhatsApp. Veréis en el mapa dónde está cada uno mientras tengáis Vigía abierta, y podréis mandaros destinos.</p>
+        <div class="group"><label class="opt"><span class="lbl">Tu nombre<small>Lo verán los demás</small></span><input class="car-input" id="nickIn" maxlength="20" value="${esc(S.nick || '')}" placeholder="Gerard"></label></div>
+        <button type="button" class="btn-grad" data-act="create">${ic('i-me')}Crear grupo</button>
+        <div class="group"><label class="opt"><span class="lbl">¿Te han pasado un código?</span><input class="car-input" id="codeIn" maxlength="40" placeholder="abc23xyz"></label></div>
+        <button type="button" class="btn-ghost" data-act="joinCode">Unirme con el código</button>
+        <div class="section-label">Modo copiloto</div>
+        <p class="fine" style="margin:0">Tu acompañante se une al grupo desde su móvil, busca el destino y pulsa «Enviar al grupo». A ti te llega para tocar «Ir», sin soltar el volante.</p>`);
+    } else {
+      const list = [...Group.members.values()];
+      openSheet('group', 'Viajar juntos', `
+        <div class="group">
+          <div class="opt"><span class="buddy-dot" style="--c:var(--teal)">${esc(Group.name()[0].toUpperCase())}</span><span class="lbl">${esc(Group.name())} (tú)<small>${st.nav && st.dest ? 'Yendo a ' + esc(st.dest.name) : 'Compartiendo tu ubicación'}</small></span></div>
+          ${list.map(m => `<button type="button" class="opt car-row" data-buddy="${esc(m.name)}" data-la="${m.lat}" data-lo="${m.lon}"><span class="buddy-dot" style="--c:${m.color}">${esc((m.name || '?')[0].toUpperCase())}</span>
+            <span class="lbl">${esc(m.name)}<small>${st.pos ? 'A ' + fmt.dist(V.haversine(st.pos.lat, st.pos.lon, m.lat, m.lon)) : ''}${m.v > 5 ? ` · ${m.v} km/h` : ' · parado'}${m.dest ? ' · va a ' + esc(m.dest) + (m.eta ? ', llega en ' + fmt.dur(m.eta) : '') : ''}</small></span><span class="chev">›</span></button>`).join('')}
+          ${list.length ? '' : '<div class="opt"><span class="lbl">Todavía no se ha unido nadie<small>Pásales el enlace</small></span></div>'}
+        </div>
+        <button type="button" class="btn-grad" data-act="share">${ic('i-up')}Invitar (WhatsApp, mensajes…)</button>
+        ${st.dest ? `<button type="button" class="btn-ghost" data-act="sendDest">Enviar «${esc(st.dest.name)}» al grupo</button>` : '<p class="fine" style="margin:0">Para mandar un destino al grupo, búscalo arriba y luego vuelve aquí.</p>'}
+        <div class="test"><button type="button" data-msg="Voy">«Voy»</button><button type="button" data-msg="Paramos a repostar">«Paramos»</button><button type="button" data-msg="Llego en 5 min">«5 min»</button></div>
+        <p class="fine" style="margin:0">Código del grupo: <b>${esc(Group.code)}</b>. Solo lo ve quien tenga el enlace.</p>
+        <button type="button" class="link-btn danger" data-act="leave">Salir del grupo</button>`);
+    }
+    $('#sheetBody').onchange = null;
+    $('#sheetBody').onclick = async e => {
+      const t = e.target.closest('button'); if (!t) return;
+      const saveNick = () => { const v = ($('#nickIn') || {}).value; if (v != null) { S.nick = v.trim(); saveS(); } };
+      if (t.dataset.act === 'create') { saveNick(); Group.join(Group.newCode()); openGroup(); shareInvite(); }
+      if (t.dataset.act === 'joinCode') {
+        saveNick();
+        const raw = ($('#codeIn').value || '').trim(); const code = (raw.match(/grupo=([a-z0-9]+)/i) || [])[1] || raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (code.length < 6) { toast('Ese código no es válido'); return; }
+        Group.join(code); openGroup(); toast('Te has unido al grupo');
+      }
+      if (t.dataset.act === 'share') shareInvite();
+      if (t.dataset.act === 'leave') { Group.leave(); closeSheet(); toast('Has salido del grupo'); }
+      if (t.dataset.act === 'sendDest' && st.dest) { await Group.send({ t: 'dest', name: st.dest.name, sub: st.dest.sub || '', la: st.dest.lat, lo: st.dest.lon }); toast('Destino enviado al grupo'); }
+      if (t.dataset.msg) { await Group.send({ t: 'msg', text: t.dataset.msg }); toast('Enviado'); }
+      if (t.dataset.buddy) { closeSheet(); setFollow(false); map.flyTo({ center: [+t.dataset.lo, +t.dataset.la], zoom: 15, duration: 900 }); }
+    };
+  }
+  async function shareInvite() {
+    const text = `Únete a mi grupo en Vigía para ver dónde estamos: ${inviteUrl()}`;
+    try { if (navigator.share) { await navigator.share({ title: 'Vigía', text, url: inviteUrl() }); return; } } catch { return; }
+    try { await navigator.clipboard.writeText(inviteUrl()); toast('Enlace copiado'); } catch { toast(inviteUrl()); }
+  }
+  // Abrir un enlace de invitación (…/vigia/?grupo=xxxx)
+  (() => {
+    const code = new URLSearchParams(location.search).get('grupo');
+    if (code && /^[a-z0-9]{6,20}$/i.test(code)) {
+      history.replaceState(null, '', location.pathname);
+      setTimeout(() => { if (Group.code !== code.toLowerCase()) { Group.join(code.toLowerCase()); toast('Te has unido al grupo'); } openGroup(); }, 1200);
+    } else if (Group.code) setTimeout(() => Group.join(Group.code), 1500);
+  })();
+
+  // ---------- Ranking de avisadores ----------
+  // Tus avisos y confirmaciones suben tu nivel (se guarda en este móvil). El ranking del día
+  // cuenta los avisos de las últimas 12 horas de todos los conductores de Vigía.
+  const LEVELS = [[0, 'Novato', '🌱'], [5, 'Vigilante', '👀'], [20, 'Centinela', '🛡️'], [50, 'Halcón', '🦅'], [120, 'Leyenda', '👑']];
+  const myStats = () => Object.assign({ reports: 0, votes: 0 }, store.get('myStats', {}));
+  function addMyStat(k) { const s = myStats(); s[k]++; store.set('myStats', s); }
+  const myPoints = () => { const s = myStats(); return s.reports * 3 + s.votes; };
+  function levelOf(pts) { let L = LEVELS[0], next = null; for (let i = 0; i < LEVELS.length; i++) if (pts >= LEVELS[i][0]) { L = LEVELS[i]; next = LEVELS[i + 1] || null; } return { L, next }; }
+  function rankingToday() {
+    const pts = new Map();
+    for (const m of st.cmsgs || []) {
+      let p; try { p = JSON.parse(m.message); } catch { continue; }
+      if (!p || !p.d || (p.t !== 'r' && p.t !== 'v')) continue;
+      const e = pts.get(p.d) || { pts: 0, name: null };
+      e.pts += p.t === 'r' ? 3 : (p.v > 0 ? 1 : 0); if (p.n) e.name = p.n;
+      pts.set(p.d, e);
+    }
+    return [...pts.entries()].filter(([, e]) => e.pts > 0).sort((a, b) => b[1].pts - a[1].pts).slice(0, 10);
+  }
+  function levelHtml() {
+    const p = myPoints(), { L, next } = levelOf(p), s = myStats();
+    const pct = next ? Math.round((p - L[0]) / (next[0] - L[0]) * 100) : 100;
+    return `<button type="button" class="level-card" data-act="ranking"><span class="lv-emoji">${L[2]}</span>
+      <span class="lv-main"><b>${L[1]}</b><small>${s.reports} avisos · ${s.votes} confirmaciones${next ? ` · ${next[0] - p} puntos para ${next[1]}` : ' · nivel máximo'}</small>
+      <span class="lv-bar"><span style="width:${pct}%"></span></span></span><span class="chev">›</span></button>`;
+  }
+  function openRanking() {
+    const top = rankingToday();
+    openSheet('ranking', 'Avisadores', `
+      ${levelHtml().replace('data-act="ranking"', 'data-act="none"').replace('<span class="chev">›</span>', '')}
+      <div class="section-label">Insignias</div>
+      <div class="badges">${LEVELS.map(([min, n, e]) => `<div class="badge ${myPoints() >= min ? 'on' : ''}"><span>${e}</span><small>${n}</small><small class="b-min">${min} pts</small></div>`).join('')}</div>
+      <div class="section-label">Top de hoy (últimas 12 h)</div>
+      <div class="group">${top.length ? top.map(([id, e], i) => `<div class="opt"><span class="rank-n">${i + 1}</span><span class="lbl">${id === deviceId ? '<b>Tú</b>' : esc(e.name || 'Conductor ' + id.slice(0, 3).toUpperCase())}</span><b>${e.pts} pts</b></div>`).join('')
+        : '<div class="opt"><span class="lbl">Hoy nadie ha avisado todavía<small>¡Sé el primero!</small></span></div>'}</div>
+      <div class="group"><label class="opt"><span class="lbl">Tu nombre en el ranking<small>Si lo dejas vacío, sales como «Conductor»</small></span><input class="car-input" id="nickIn2" maxlength="20" value="${esc(S.nick || '')}" placeholder="Gerard"></label></div>
+      <p class="fine" style="margin:0">Avisar de un radar: 3 puntos. Confirmar uno: 1 punto. Avisa solo como copiloto o parado.</p>`);
+    $('#sheetBody').onclick = null;
+    $('#sheetBody').onchange = e => { if (e.target.id === 'nickIn2') { S.nick = e.target.value.trim(); saveS(); toast('Nombre guardado'); } };
+  }
+
+  if (location.hostname === 'localhost') window.__vigia = { Trips, car, refuelPlan, setFuelLevel, Group, inRing, joinRings };   // solo para pruebas
 
   // ---------- Botones ----------
   $('#searchBtn').addEventListener('click', openSearch);
@@ -2474,6 +3033,7 @@
   });
 
   renderChips(); renderSearchBar(); renderSpeed(); setFollow(true);
+  drawParking();
   loadOfficialRadars();
   loadPrices();
   setInterval(() => loadPrices(), 10 * 60e3);        // precios: cada 10 min
