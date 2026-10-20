@@ -27,6 +27,13 @@ FUELS = [
     ["Precio Gases licuados del petróleo", "Precio Gases licuados del petroleo"],
 ]
 DAY = 24 * 3600
+# GitHub corta el trabajo a los 15 min: el script se organiza para acabar antes y guardar lo que tenga.
+START = time.time()
+BUDGET = 12 * 60
+
+
+def left():
+    return BUDGET - (time.time() - START)
 
 
 def now_iso():
@@ -133,9 +140,11 @@ def fetch_ministerio():
     """Lista completa de gasolineras. A veces el Ministerio devuelve una lista
     incompleta: se reintenta y, si sigue corta, se pide provincia a provincia."""
     best = None
-    for _ in range(3):
+    for _ in range(2):
+        if left() < 300:
+            break
         try:
-            raw = get_json(MINISTERIO, timeout=180)
+            raw = get_json(MINISTERIO, timeout=min(180, max(30, left() - 240)))
             if best is None or len(raw.get("ListaEESSPrecio", [])) > len(best.get("ListaEESSPrecio", [])):
                 best = raw
             if len(best.get("ListaEESSPrecio", [])) >= 10000:
@@ -145,8 +154,11 @@ def fetch_ministerio():
         time.sleep(10)
     merged, fecha = {}, (best or {}).get("Fecha", "")
     for prov in range(1, 53):
+        if left() < 240:
+            print("Ministerio: sin tiempo para seguir provincia a provincia", file=sys.stderr)
+            break
         try:
-            r = get_json(f"{MINISTERIO}FiltroProvincia/{prov:02d}", timeout=90)
+            r = get_json(f"{MINISTERIO}FiltroProvincia/{prov:02d}", timeout=60)
             fecha = r.get("Fecha") or fecha
             for d in r.get("ListaEESSPrecio", []):
                 merged[str(d.get("IDEESS"))] = d
@@ -320,14 +332,16 @@ def fetch_osm():
     for box in BOXES:
         body = urllib.parse.urlencode({"data": QUERY.format(*box)}).encode()
         for attempt, url in enumerate(OVERPASS * 2):
+            if left() < 90:
+                raise RuntimeError("sin tiempo para OpenStreetMap: se mantienen los de la última vez")
             try:
-                j = get_json(url, data=body, timeout=150)
+                j = get_json(url, data=body, timeout=min(90, left() - 60))
                 for e in j.get("elements", []):
                     elements[(e.get("type"), e.get("id"))] = e
                 break
             except Exception as e:  # probar el otro servidor, o el mismo un poco después
                 print(f"Overpass {box}: {e}", file=sys.stderr)
-                time.sleep(10 * (attempt + 1))
+                time.sleep(min(10 * (attempt + 1), max(0, left() - 90)))
         else:
             failed += 1
         time.sleep(2)
@@ -553,8 +567,11 @@ def update_cameras():
 
 def main():
     errors = []
-    for name, fn in (("precios", update_prices), ("radares", lambda: update_radars("--radares" in sys.argv)),
-                     ("incidencias", update_incidents), ("camaras", update_cameras)):
+    for name, fn in (("incidencias", update_incidents), ("camaras", update_cameras),
+                     ("precios", update_prices), ("radares", lambda: update_radars("--radares" in sys.argv))):
+        if left() < 60 and name != "incidencias":
+            print(f"{name}: sin tiempo, la próxima vez", file=sys.stderr)
+            continue
         try:
             fn()
         except Exception as e:
