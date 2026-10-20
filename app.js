@@ -40,7 +40,7 @@
     layer: 'all', showGone: true, mapStyle: 'dark',
     tolls: 'avoid', criterion: 'eco', avoidMotorways: false,
     fuel: 'g95', consumption: 6.5,
-    meStyle: 'arrow', meColor: '#00E0C6', meSize: 'm', autoTrips: true,
+    meStyle: 'arrow', meColor: '#00E0C6', meSize: 'm', autoTrips: true, md_inc: true, md_cam: false, showLimit: true,
     // Qué se ve en el mapa (lo oculto tampoco avisa)
     sh_fixed: true, sh_section: true, sh_mobile: true, sh_light: true, sh_police: true, sh_gas: true,
   };
@@ -239,6 +239,7 @@
     { k: 'dark', name: 'Noche' }, { k: 'light', name: 'Día' }, { k: 'satellite', name: 'Satélite' }, { k: 'terrain', name: 'Relieve' },
   ];
   const MAP_DETAILS = [
+    { k: 'inc', name: 'Incidencias' }, { k: 'cam', name: 'Cámaras DGT' },
     { k: 'buildings', name: 'Edificios 3D' }, { k: 'bike', name: 'Carril bici' }, { k: 'rail', name: 'Tren y metro' },
   ];
   // Miniaturas propias de Vigía: paleta nocturna turquesa→azul del logo.
@@ -259,6 +260,12 @@
       <path d="M8 40c6-18 30-26 42-12s-8 30-26 26S4 50 8 40z" stroke="#C9B48E"/><path d="M16 39c5-11 22-16 29-7s-6 19-17 16-14-3-12-9z" stroke="#B19A70"/>
       <path d="M24 38c3-6 12-8 15-3s-3 9-8 8-8-2-7-5z" stroke="#00B8A3"/></g>
       <path d="M44 6 56 22H32z" fill="#9C8763"/><path d="M44 6 48 11.5 44 10 40.5 12z" fill="#fff"/>`,
+    inc: `<rect width="64" height="64" fill="#0B1222"/><path d="M-4 46C16 42 26 28 70 22" stroke="#1E2A44" stroke-width="12" fill="none"/>
+      <path d="M-4 46C16 42 26 28 70 22" stroke="url(#mt-g)" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M32 12 47 38H17z" fill="#FF8A3D" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/><path d="M32 21v8M32 33v.5" stroke="#0B1222" stroke-width="3.2" stroke-linecap="round"/>`,
+    cam: `<rect width="64" height="64" fill="#0B1222"/><path d="M-4 52C18 46 30 36 70 32" stroke="#1E2A44" stroke-width="12" fill="none"/>
+      <path d="M14 10h4v26h-4z" fill="#55627F"/><rect x="18" y="12" width="26" height="15" rx="4" fill="url(#mt-g)"/><path d="M44 16l8-4v15l-8-4z" fill="#2F6EFF"/>
+      <circle cx="28" cy="19.5" r="4.5" fill="#0B1222"/><circle cx="28" cy="19.5" r="1.8" fill="#8FF5E8"/><circle cx="50" cy="44" r="3" fill="#FF4554"/>`,
     buildings: `<rect width="64" height="64" fill="#0B1222"/><path d="M8 46 22 38l14 8-14 8z" fill="#1E2A44"/>
       <path d="M14 44V22l10-6 10 6v22l-10 6z" fill="#2F6EFF"/><path d="M24 50V28l10-6v22z" fill="#1D4DC4"/><path d="M14 22l10 6 10-6-10-6z" fill="#7FA6FF"/>
       <path d="M36 48V34l8-5 8 5v14l-8 5z" fill="#00E0C6"/><path d="M44 53V39l8-5v14z" fill="#00A792"/><path d="M36 34l8 5 8-5-8-5z" fill="#8FF5E8"/>`,
@@ -277,14 +284,18 @@
       <div class="map-tiles">${MAP_TYPES.map(t => `<button type="button" class="map-tile" data-maptype="${t.k}" aria-pressed="${S.mapStyle === t.k}">${mapArt(t.k)}<span>${t.name}</span></button>`).join('')}</div>
       <div class="section-label">Detalles del mapa</div>
       <div class="map-tiles">${MAP_DETAILS.map(d => `<button type="button" class="map-tile" data-mapdetail="${d.k}" aria-pressed="${!!S['md_' + d.k]}">${mapArt(d.k)}<span>${d.name}</span></button>`).join('')}</div>
-      <p class="fine" style="margin:0">Los edificios 3D se ven al acercarte y con el mapa inclinado. Carril bici y tren se ven mejor con zoom de ciudad.</p>`;
+      <p class="fine" style="margin:0">Los edificios 3D se ven al acercarte y con el mapa inclinado. Carril bici, tren y cámaras se ven mejor con zoom de ciudad. Incidencias y cámaras: DGT y Servei Català de Trànsit.</p>`;
   }
   /** Cambia tipo de mapa o detalles. Devuelve true si el clic era de aquí. */
   function onMapPickerClick(t) {
     if (t.dataset.maptype) { S.mapStyle = t.dataset.maptype; }
-    else if (t.dataset.mapdetail) { const k = 'md_' + t.dataset.mapdetail; S[k] = !S[k]; }
+    else if (t.dataset.mapdetail) { const k = 'md_' + t.dataset.mapdetail; S[k] = S[k] === false ? true : !S[k]; }
     else return false;
     saveS();
+    if (t.dataset.mapdetail === 'inc' || t.dataset.mapdetail === 'cam') {
+      document.querySelectorAll('[data-mapdetail]').forEach(b => b.setAttribute('aria-pressed', S['md_' + b.dataset.mapdetail] !== false && !!S['md_' + b.dataset.mapdetail]));
+      drawTraffic(); refreshRouteIncidents(); return true;
+    }
     document.querySelectorAll('[data-maptype]').forEach(b => b.setAttribute('aria-pressed', b.dataset.maptype === S.mapStyle));
     document.querySelectorAll('[data-mapdetail]').forEach(b => b.setAttribute('aria-pressed', !!S['md_' + b.dataset.mapdetail]));
     map.setStyle(STYLES[S.mapStyle] || STYLES.dark, { diff: false });
@@ -688,6 +699,8 @@
     renderSpeed();
     throttledCheap();
     Trips.onFix(lat, lon, acc, speed || 0, t);
+    SpeedLimit.onFix(lat, lon);
+    if (st.nav) checkNavIncidents();
   }
 
   function onPositionError(e) {
@@ -1408,7 +1421,7 @@
   }
 
   function isSpeeding() {
-    const lim = currentRadar && currentRadar.r.limit;
+    const lim = (currentRadar && currentRadar.r.limit) || streetLimit();
     return !!(lim && st.speed > lim + 2);
   }
 
@@ -1416,7 +1429,7 @@
     const v = Math.round(st.speed);
     $('#speedVal').textContent = v;
     $('#speedArc').style.strokeDasharray = `${(76 * Math.min(v / 160, 1)).toFixed(1)} 100`;
-    const lim = currentRadar && currentRadar.r.limit;
+    const lim = (currentRadar && currentRadar.r.limit) || streetLimit();
     $('#speedLimit').hidden = !lim;
     if (lim) $('#speedLimit').textContent = lim;
     $('#speed').classList.toggle('speeding', isSpeeding());
@@ -1679,14 +1692,14 @@
         <div class="pills">
           <span class="pill" style="--c:var(--cheap)">${ic('i-fuel')}${fmt.liters(r.liters)} · ${fmt.eur(r.cost)}</span>
           <span class="pill" style="--c:${n.all ? 'var(--red)' : 'var(--muted)'}">${ic('i-camera')}${n.all} radar${n.all === 1 ? '' : 'es'}${n.hidden ? ` · ${n.hidden} oculto${n.hidden === 1 ? '' : 's'}` : ''}</span>
-          <span class="pill" style="--c:${r.hasTolls ? 'var(--mid)' : 'var(--teal)'}">${ic(r.hasTolls ? 'i-euro' : 'i-check')}${r.hasTolls ? 'Peaje' : 'Sin peaje'}</span>
+          <span class="pill" style="--c:${r.hasTolls ? 'var(--mid)' : 'var(--teal)'}">${ic(r.hasTolls ? 'i-euro' : 'i-check')}${r.hasTolls ? `Peaje ~${fmt.eur(tollEstimate(r))}` : 'Sin peaje'}</span>
         </div>
       </button>`; }).join('');
     if (sel) {
-      html += refuelLine(sel) + zbeLine(sel);
+      html += incidentsLine(sel) + refuelLine(sel) + zbeLine(sel);
       html += `<button class="btn-grad" type="button" data-act="go">${ic('i-locate')}Iniciar navegación</button>`;
       if (Group.code) html += `<button class="btn-ghost" type="button" data-act="sendgroup">Enviar este destino al grupo</button>`;
-      html += `<p class="fine">Consumo estimado con ${fmt.liters(S.consumption)}/100 km y ${V.FUELS.find(f => f.key === S.fuel).label} a ${fmt.price(sel.price)} €/L (media de las gasolineras más baratas cerca). El precio del peaje no se incluye.</p>`;
+      html += `<p class="fine">Consumo estimado con ${fmt.liters(S.consumption)}/100 km y ${V.FUELS.find(f => f.key === S.fuel).label} a ${fmt.price(sel.price)} €/L (media de las gasolineras más baratas cerca). El peaje es una estimación por km.</p>`;
     }
     $('#plannerBody').innerHTML = html;
   }
@@ -1698,6 +1711,7 @@
     if (t.dataset.act === 'retry') { planRoute(); return; }
     if (t.dataset.act === 'go') { startNav(); return; }
     if (t.dataset.station) { openStation(t.dataset.station); return; }
+    if (t.dataset.inc) { openIncident(t.dataset.inc); return; }
     if (t.dataset.act === 'sendgroup' && st.dest) { Group.send({ t: 'dest', name: st.dest.name, sub: st.dest.sub || '', la: st.dest.lat, lo: st.dest.lon }); toast('Destino enviado al grupo'); return; }
     if (t.dataset.toll) { S.tolls = t.dataset.toll; saveS(); st.selectedId = visibleRoutes()[0]?.id; }
     if (t.dataset.crit) { S.criterion = t.dataset.crit; saveS(); st.selectedId = visibleRoutes()[0]?.id; }
@@ -1962,6 +1976,7 @@
         ${sw('alertFar', 'Avisar a 1 km')}
         ${sw('alertNear', 'Avisar a 500 m')}
         ${sw('speeding', 'Avisar si voy por encima del límite')}
+        ${sw('showLimit', 'Ver el límite de cada calle', 'Junto a tu velocidad. Se pone en rojo si lo pasas')}
         <div class="test">
           <button type="button" data-test="far">Probar 1 km</button>
           <button type="button" data-test="near">Probar 500 m</button>
@@ -2226,7 +2241,8 @@
       const itvs = car.itvs.slice().sort((a, b) => b.date.localeCompare(a.date));
       html += `<div class="group">${DOCS.map(d => { const s = docStatus(d); return `<button type="button" class="opt car-row" data-doc="${d.k}">
         <span class="lbl">${esc(d.name)}<small>${esc(s.sub)}</small></span>${lvlPill(s)}</button>`; }).join('')}</div>
-        <p class="fine">ITV: ${esc(itvText().toLowerCase())}. Te avisaré al abrir Vigía cuando falte un mes o menos.</p>
+        <button type="button" class="btn-grad" data-act="calendar">${ic('i-clock')}Avisos en el calendario del iPhone</button>
+        <p class="fine">ITV: ${esc(itvText().toLowerCase())}. Con el calendario, el iPhone te avisa 30 y 7 días antes aunque no abras Vigía. Si cambias fechas, vuelve a añadirlos.</p>
 
         <div class="section-label">Historial de ITV</div>
         <div class="group">
@@ -2283,6 +2299,7 @@
       if (t.dataset.act === 'editCar') return editCar();
       if (t.dataset.act === 'addItv') return addItv();
       if (t.dataset.act === 'export') return exportCar();
+      if (t.dataset.act === 'calendar') return exportCalendar();
       if (t.dataset.maint) return editMaint(maintList().find(x => x.k === t.dataset.maint));
       if (t.dataset.doc) return editDoc(DOCS.find(x => x.k === t.dataset.doc));
       if (t.dataset.station) return openStation(t.dataset.station);
@@ -2992,7 +3009,239 @@
     $('#sheetBody').onchange = e => { if (e.target.id === 'nickIn2') { S.nick = e.target.value.trim(); saveS(); toast('Nombre guardado'); } };
   }
 
-  if (location.hostname === 'localhost') window.__vigia = { Trips, car, refuelPlan, setFuelLevel, Group, inRing, joinRings };   // solo para pruebas
+  // ---------- Límite de velocidad de la calle ----------
+  // Calles con su límite (OpenStreetMap) en ~1 km a tu alrededor; se vuelve a pedir al salir de esa zona.
+  const SpeedLimit = {
+    ways: [], box: null, loading: false, cur: null, lastTry: 0,
+    parse(v) {
+      if (!v) return null;
+      v = String(v).toLowerCase().trim();
+      const n = parseInt(v, 10);
+      if (n > 0 && n < 200) return v.includes('mph') ? Math.round(n * 1.609) : n;
+      return { 'es:urban': 50, 'es:zone30': 30, 'es:zone20': 20, 'es:rural': 90, 'es:trunk': 100, 'es:motorway': 120, 'es:living_street': 20, 'walk': 10 }[v] || null;
+    },
+    async load(lat, lon) {
+      if (this.loading || now() - this.lastTry < 15000) return;
+      this.loading = true; this.lastTry = now();
+      const d = 0.012, bbox = [lat - d, lon - d * 1.35, lat + d, lon + d * 1.35];
+      const q = `[out:json][timeout:20];way["highway"]["highway"!~"footway|path|cycleway|steps|pedestrian|track|bridleway|service"](${bbox.join(',')});out tags geom;`;
+      for (const base of CONFIG.overpassList) {
+        try {
+          const r = await fetchTimeout(`${base}?data=${encodeURIComponent(q)}`, 25000);
+          if (!r.ok) continue;
+          const j = await r.json();
+          this.ways = (j.elements || []).filter(e => e.geometry && e.geometry.length > 1).map(e => {
+            const t = e.tags || {};
+            return { pts: e.geometry.map(p => [p.lat, p.lon]), oneway: t.oneway === 'yes' || t.junction === 'roundabout' || /motorway/.test(t.highway),
+              max: this.parse(t.maxspeed), fwd: this.parse(t['maxspeed:forward']), bwd: this.parse(t['maxspeed:backward']),
+              hw: t.highway, name: t.name || t.ref || '' };
+          });
+          this.box = bbox;
+          break;
+        } catch { /* siguiente servidor */ }
+      }
+      this.loading = false;
+    },
+    // Calle más cercana que va en tu dirección
+    match(lat, lon, heading) {
+      let best = null;
+      const kx = Math.cos(lat * Math.PI / 180) * 111320, ky = 110540;
+      for (const w of this.ways) {
+        for (let i = 1; i < w.pts.length; i++) {
+          const [la1, lo1] = w.pts[i - 1], [la2, lo2] = w.pts[i];
+          const ax = (lo1 - lon) * kx, ay = (la1 - lat) * ky, bx = (lo2 - lon) * kx, by = (la2 - lat) * ky;
+          const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy || 1;
+          const tt = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / L));
+          const dist = Math.hypot(ax + tt * dx, ay + tt * dy);
+          if (dist > 30) continue;
+          let penalty = 0, back = false;
+          if (heading != null && st.speed > 8) {
+            const segB = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360, diff = V.angleDiff(heading, segB);
+            back = diff > 90;
+            penalty = Math.min(diff, 180 - diff) * 0.4 + (back && w.oneway ? 60 : 0);
+          }
+          const score = dist + penalty;
+          if (!best || score < best.score) best = { score, w, back };
+        }
+      }
+      if (!best) return null;
+      const w = best.w;
+      return (best.back ? w.bwd : w.fwd) || w.max || null;
+    },
+    onFix(lat, lon) {
+      if (S.showLimit === false) { this.cur = null; return; }
+      const b = this.box, m = 0.004;
+      if (!b || lat < b[0] + m || lat > b[2] - m || lon < b[1] + m * 1.35 || lon > b[3] - m * 1.35) this.load(lat, lon);
+      this.cur = this.match(lat, lon, st.heading);
+    },
+  };
+  const streetLimit = () => SpeedLimit.cur;
+
+  // ---------- Tráfico: incidencias y cámaras de la DGT ----------
+  const INC = {
+    acc: { label: 'Accidente', color: '#FF4554', icon: 'i-alert' },
+    obr: { label: 'Obras', color: '#FF8A3D', icon: 'i-lanes' },
+    cor: { label: 'Corte o carril cerrado', color: '#FF4554', icon: 'i-x' },
+    ret: { label: 'Retención', color: '#FFC83A', icon: 'i-car' },
+    met: { label: 'Tiempo adverso', color: '#6FB7FF', icon: 'i-alert' },
+    obs: { label: 'Obstáculo en la vía', color: '#FF8A3D', icon: 'i-alert' },
+    inc: { label: 'Incidencia', color: '#FFC83A', icon: 'i-alert' },
+  };
+  st.incidents = []; st.cameras = []; st.trafficAt = null;
+  async function loadTraffic(cams) {
+    try {
+      const r = await fetchTimeout('data/incidencias.json?v=' + Math.floor(now() / 300e3), 20000);
+      if (r.ok) {
+        const j = await r.json();
+        st.incidents = (j.i || []).map(x => ({ id: x[0], kind: INC[x[1]] ? x[1] : 'inc', lat: x[2], lon: x[3], lat2: x[4], lon2: x[5], road: x[6], detail: x[7], start: x[8] }));
+        st.trafficAt = new Date(j.actualizado);
+        drawTraffic(); refreshRouteIncidents();
+      }
+    } catch { /* aún no hay datos */ }
+    if (!cams) return;
+    try {
+      const r = await fetchTimeout('data/camaras.json?v=' + Math.floor(now() / 3600e3), 20000);
+      if (r.ok) { const j = await r.json(); st.cameras = (j.c || []).map(x => ({ id: x[0], lat: x[1], lon: x[2], road: x[3], km: x[4], url: x[5] })); drawTraffic(); }
+    } catch { /* aún no hay datos */ }
+  }
+  function trafficImage(id) {
+    const [, kind] = id.split(':');
+    const isCam = kind === 'cam', c = document.createElement('canvas'), px = 2, size = isCam ? 30 : 36;
+    c.width = c.height = size * px;
+    const ctx = c.getContext('2d'); ctx.scale(px, px);
+    if (isCam) {
+      ctx.beginPath(); ctx.roundRect(3, 3, 24, 24, 7); ctx.fillStyle = '#1E2A44'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#8FB4FF'; ctx.stroke();
+      ctx.fillStyle = '#8FB4FF'; ctx.beginPath(); ctx.roundRect(8, 11, 11, 8, 2); ctx.fill(); ctx.beginPath(); ctx.moveTo(19, 13.5); ctx.lineTo(23, 11); ctx.lineTo(23, 19); ctx.lineTo(19, 16.5); ctx.fill();
+      return ctx.getImageData(0, 0, c.width, c.height);
+    }
+    const k = INC[kind] || INC.inc;
+    // Triángulo de aviso con el color del tipo
+    ctx.beginPath(); ctx.moveTo(18, 3); ctx.lineTo(34, 31); ctx.lineTo(2, 31); ctx.closePath();
+    ctx.fillStyle = k.color; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.lineJoin = 'round'; ctx.stroke();
+    ctx.fillStyle = '#0B1220'; ctx.font = '700 15px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText({ acc: '!', obr: '⚒', cor: '⛔', ret: '≡', met: '☁', obs: '!', inc: '!' }[kind] || '!', 18, 27);
+    return ctx.getImageData(0, 0, c.width, c.height);
+  }
+  map.on('styleimagemissing', e => { if (e.id.startsWith('tf:') && !map.hasImage(e.id)) map.addImage(e.id, trafficImage(e.id), { pixelRatio: 2 }); });
+  function addTrafficLayers() {
+    const before = map.getLayer('radars') ? 'radars' : undefined;
+    map.addSource('vg-cam', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addSource('vg-inc', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({ id: 'vg-cam', type: 'symbol', source: 'vg-cam', minzoom: 9,
+      layout: { 'icon-image': 'tf:cam', 'icon-allow-overlap': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 9, 0.6, 14, 0.9] } }, before);
+    map.addLayer({ id: 'vg-inc', type: 'symbol', source: 'vg-inc', minzoom: 6,
+      layout: { 'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.55, 13, 0.95] } }, before);
+    drawTraffic();
+  }
+  map.on('style.load', addTrafficLayers);
+  function drawTraffic() {
+    const set = (id, feats) => { const s2 = map.getSource(id); if (s2) s2.setData({ type: 'FeatureCollection', features: feats }); };
+    set('vg-inc', S.md_inc === false ? [] : st.incidents.map(x => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] }, properties: { id: x.id, icon: 'tf:' + x.kind } })));
+    set('vg-cam', !S.md_cam ? [] : st.cameras.map(x => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] }, properties: { id: x.id } })));
+  }
+  map.on('click', 'vg-inc', e => { const f = e.features && e.features[0]; if (f) openIncident(f.properties.id); });
+  map.on('click', 'vg-cam', e => { const f = e.features && e.features[0]; if (f) openCamera(f.properties.id); });
+  ['vg-inc', 'vg-cam'].forEach(l => { map.on('mouseenter', l, () => { map.getCanvas().style.cursor = 'pointer'; }); map.on('mouseleave', l, () => { map.getCanvas().style.cursor = ''; }); });
+  const incTitle = x => INC[x.kind].label + (x.detail ? ` · ${x.detail}` : '');
+  function openIncident(id) {
+    const x = st.incidents.find(i => i.id === id); if (!x) return;
+    const d = st.pos ? V.haversine(st.pos.lat, st.pos.lon, x.lat, x.lon) : null;
+    const since = x.start ? new Date(x.start).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+    openSheet('incident', INC[x.kind].label, `
+      <div class="facts"><div>${ic('i-alert')}${esc(incTitle(x))}</div>
+        ${x.road ? `<div>${ic('i-map')}${esc(x.road)}</div>` : ''}
+        ${since ? `<div>${ic('i-clock')}Desde el ${esc(since)}</div>` : ''}
+        ${d != null ? `<div>${ic('i-locate')}A ${fmt.dist(d)} de ti</div>` : ''}</div>
+      <p class="fine" style="margin:0">Fuente: ${x.id.startsWith('sct') ? 'Servei Català de Trànsit' : 'DGT'}${st.trafficAt ? ' · actualizado ' + relTime(st.trafficAt.getTime()) : ''}.</p>`);
+    $('#sheetBody').onclick = null; $('#sheetBody').onchange = null;
+  }
+  let camTimer = null;
+  function openCamera(id) {
+    const x = st.cameras.find(c => String(c.id) === String(id)); if (!x) return;
+    const src = () => x.url + (x.url.includes('?') ? '&' : '?') + 't=' + Math.floor(now() / 30000);
+    openSheet('camera', x.road ? `Cámara ${x.road}` : 'Cámara DGT', `
+      <img class="cam-img" id="camImg" src="${esc(src())}" alt="Imagen en directo de la cámara">
+      <p class="fine" style="margin:0">${x.km ? `Km ${esc(x.km)} · ` : ''}Imagen en directo de la DGT. Se actualiza sola cada 30 segundos.</p>`);
+    $('#sheetBody').onclick = null; $('#sheetBody').onchange = null;
+    const img = $('#camImg'); img.onerror = () => { img.replaceWith(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Esta cámara no está emitiendo ahora mismo.' })); };
+    clearInterval(camTimer);
+    camTimer = setInterval(() => { const el = $('#camImg'); if (!el || sheetKind !== 'camera') { clearInterval(camTimer); return; } el.src = src(); }, 30000);
+  }
+  // Incidencias en la ruta
+  function routeIncidents(route) {
+    if (!st.incidents.length || S.md_inc === false) return [];
+    return V.radarsOnLine(route.line, st.incidents, 120).map(x => ({ inc: x.radar, along: x.along })).sort((a, b) => a.along - b.along);
+  }
+  function incidentsLine(route) {
+    const list = routeIncidents(route);
+    if (!list.length) return '';
+    const first = list[0].inc;
+    return `<button type="button" class="refuel bad" data-inc="${esc(first.id)}">${ic('i-alert')}<span><b>${list.length} incidencia${list.length === 1 ? '' : 's'} en tu ruta</b>: ${esc(incTitle(first).toLowerCase())}${first.road ? ' en ' + esc(first.road) : ''}, en el km ${Math.round(list[0].along / 1000)}${list.length > 1 ? ' y más' : ''}</span></button>`;
+  }
+  function refreshRouteIncidents() {
+    if (st.nav) st.nav.incOn = routeIncidents(st.nav.route);
+    if (st.routes && st.routes.length) renderPlanner();
+  }
+  // Aviso a 2 km de una incidencia en la ruta (una vez cada una)
+  function checkNavIncidents() {
+    const n = st.nav; if (!n) return;
+    if (!n.incOn) n.incOn = routeIncidents(n.route);
+    n.incSaid = n.incSaid || new Set();
+    for (const x of n.incOn) {
+      const ahead = x.along - (n.progress || 0);
+      if (ahead > 0 && ahead < 2000 && !n.incSaid.has(x.inc.id)) {
+        n.incSaid.add(x.inc.id);
+        const txt = `${incTitle(x.inc)} a ${V.spokenDistance(ahead)}`;
+        notice(txt, 8000); play('far'); if (wantAlerts()) say(txt);
+      }
+    }
+  }
+
+  // ---------- Peajes (estimación) ----------
+  // No hay una tarifa abierta de todos los peajes: se estima con los km de peaje de la ruta (≈0,11 €/km en turismo).
+  function tollEstimate(route) {
+    if (!route.hasTolls) return 0;
+    let m = 0;
+    for (const s2 of route.steps) if ((s2.intersections || []).some(i => (i.classes || []).includes('toll'))) m += s2.distance;
+    const eur = m / 1000 * 0.11;
+    return eur < 0.5 ? 0.5 : Math.round(eur * 2) / 2;
+  }
+
+  // ---------- Avisos en el calendario del iPhone ----------
+  // Un archivo de calendario con ITV, seguro, impuesto y revisiones con fecha: el iPhone avisa aunque no abras Vigía.
+  function calendarFile() {
+    const ev = [];
+    const ymd = iso => iso.replace(/-/g, '');
+    const add = (iso, title, desc) => {
+      if (!iso || daysUntil(iso) < -1) return;
+      const end = new Date(iso + 'T12:00:00'); end.setDate(end.getDate() + 1);
+      ev.push(['BEGIN:VEVENT', `UID:vigia-${ymd(iso)}-${title.replace(/\W+/g, '')}@vigia`, `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}Z`,
+        `DTSTART;VALUE=DATE:${ymd(iso)}`, `DTEND;VALUE=DATE:${ymd(end.toISOString().slice(0, 10))}`, `SUMMARY:${title}`, `DESCRIPTION:${desc}`,
+        'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${title}`, 'TRIGGER:-P30D', 'END:VALARM',
+        'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${title}`, 'TRIGGER:-P7D', 'END:VALARM',
+        'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${title}`, 'TRIGGER:-PT9H', 'END:VALARM', 'END:VEVENT'].join('\r\n'));
+    };
+    const name = carName();
+    for (const d of DOCS) if (car.docs[d.k]) add(car.docs[d.k], `${d.name} · ${name}`, `Vence hoy. Recordatorio de Vigía.`);
+    for (const it of maintList()) {
+      const last = car.maint[it.k];
+      if (last && last.date && it.months) add(addMonths(last.date, it.months), `${it.name} · ${name}`, `Toca por tiempo (o antes si llegas a los km). Recordatorio de Vigía.`);
+    }
+    if (!ev.length) return null;
+    return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Vigia//ES', 'CALSCALE:GREGORIAN', 'X-WR-CALNAME:Vigía · ' + name, ...ev, 'END:VCALENDAR'].join('\r\n');
+  }
+  function exportCalendar() {
+    const ics = calendarFile();
+    if (!ics) { toast('Pon primero las fechas de ITV, seguro o revisiones'); return; }
+    const blob = new Blob([ics], { type: 'text/calendar' });
+    const file = new File([blob], 'vigia-avisos.ics', { type: 'text/calendar' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: 'Avisos de Vigía' }).catch(() => {}); return; }
+    const url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = 'vigia-avisos.ics'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  if (location.hostname === 'localhost') window.__vigia = { Trips, car, refuelPlan, setFuelLevel, Group, inRing, joinRings, SpeedLimit, routeIncidents, tollEstimate, calendarFile, openCamera, openIncident };   // solo para pruebas
 
   // ---------- Botones ----------
   $('#searchBtn').addEventListener('click', openSearch);
@@ -3037,6 +3286,8 @@
   loadOfficialRadars();
   loadPrices();
   setInterval(() => loadPrices(), 10 * 60e3);        // precios: cada 10 min
+  loadTraffic(true);
+  setInterval(() => loadTraffic(now() % 3600e3 < 600e3), 10 * 60e3);   // incidencias cada 10 min, cámaras cada hora
   setInterval(pollCommunity, 45e3);                  // avisos de conductores: cada 45 s
   setInterval(drawRadars, 60e3);                     // el estado de los avisos cambia con el tiempo
 })();

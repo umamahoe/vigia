@@ -501,3 +501,6 @@ a.btn-grad { text-decoration: none; color: var(--night); }
 .btn-ghost svg { width: 18px; height: 18px; vertical-align: -3px; color: #3D8BFF; }
 .mode-row { font-size: 13px; color: var(--muted); padding: 0 4px; }
 .mode-row b { color: var(--fg); }
+
+.cam-img { width: 100%; border-radius: 16px; background: #000; aspect-ratio: 4 / 3; object-fit: cover; }
+button.refuel.bad { cursor: pointer; }
