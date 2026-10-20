@@ -8,7 +8,7 @@ Actualiza los datos de Vigía. Lo ejecuta GitHub Actions cada 30 minutos.
 - data/radares.json: radares fijos, de tramo y de semáforo de España
   (DGT + Servei Català de Trànsit + OpenStreetMap). Se renueva una vez al día.
 """
-import json, os, sys, time, urllib.parse, urllib.request
+import json, os, sys, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -600,17 +600,33 @@ def check_cameras():
             return r, None
         try:
             req = urllib.request.Request(r[5], headers={"User-Agent": "Vigia/1.0 (datos abiertos para app personal)"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 body = resp.read(400_000)
                 ctype = resp.headers.get("Content-Type", "")
             if len(body) < 1500 or ("image" not in ctype and not body[:4] in (b"\xff\xd8\xff\xe0", b"\xff\xd8\xff\xe1", b"GIF8", b"\x89PNG")):
                 return r, "x"
             return r, hashlib.sha1(body).hexdigest()
+        except urllib.error.HTTPError as e:
+            return r, "x" if e.code == 404 else None   # 404: la cámara ya no existe
         except Exception:
-            return r, "x"
+            return r, None                              # fallo de red: no se sabe, no se marca
 
-    with ThreadPoolExecutor(32) as ex:
-        got = list(ex.map(grab, cams))
+    # Pocas descargas a la vez por web, para que no nos corten (sobre todo gencat.cat)
+    by_host = {}
+    for r in cams:
+        by_host.setdefault(r[5].split("/")[2], []).append(r)
+    got = []
+    with ThreadPoolExecutor(24) as ex:
+        big = [r for h, rs in by_host.items() if len(rs) > 300 for r in rs]
+        small = [r for h, rs in by_host.items() if len(rs) <= 300 for r in rs]
+        got += list(ex.map(grab, big))
+    with ThreadPoolExecutor(4) as ex:
+        got += list(ex.map(grab, small))
+    # Segundo intento, despacio, para las que fallaron por la red
+    retry = [r for r, h in got if h is None]
+    got = [(r, h) for r, h in got if h is not None]
+    with ThreadPoolExecutor(3) as ex:
+        got += list(ex.map(grab, retry))
     urls_by_hash = {}
     for r, h in got:
         if h and h != "x":
@@ -621,7 +637,12 @@ def check_cameras():
         print(f"Cámaras apagadas: solo se pudieron mirar {checked}, no se guarda")
         return
     write_lines(CAMARAS_OFF, {"actualizado": now_iso(), "miradas": checked}, "off", off)
-    print(f"Cámaras apagadas: {len(off)} de {checked} miradas")
+    hosts = {}
+    for r, h in got:
+        k = r[5].split("/")[2]
+        st = hosts.setdefault(k, [0, 0, 0])
+        st[0 if h is None else 1 if str(r[0]) in off else 2] += 1
+    print(f"Cámaras apagadas: {len(off)} de {checked} miradas · por web [sin mirar, apagadas, bien]: {hosts}")
 
 
 def fetch_cameras_sct():
