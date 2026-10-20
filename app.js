@@ -3189,7 +3189,7 @@
   let camTimer = null;
   function camSource(x) {
     const u = x.url;
-    if (u.includes('mct.gencat.cat')) return 'Foto del Servei Català de Trànsit: la cambian cada 5 minutos';
+    if (u.includes('mct.gencat.cat')) return 'Foto del Servei Català de Trànsit: la cambian cada 5 minutos. Si sale el cartel «Imatges no disponibles», el SCT tiene esa cámara apagada';
     if (u.includes('bcn.cat')) return 'Foto del Ajuntament de Barcelona';
     if (u.includes('terrassa.cat')) return 'Foto del Ajuntament de Terrassa';
     return 'Foto de la DGT: la cambian cada 3 minutos y suele tener unos 5 minutos de retraso';
@@ -3204,7 +3204,10 @@
       <p class="fine" style="margin:0">${x.place ? `${esc(x.place)} · ` : ''}${x.km ? `Km ${esc(x.km)} · ` : ''}${camSource(x)}.${off ? '' : ' Vigía la recarga sola.'}</p>`);
     $('#sheetBody').onclick = null; $('#sheetBody').onchange = null;
     const img = $('#camImg'); clearInterval(camTimer); if (!img) return;
-    img.onerror = () => { img.replaceWith(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Esta cámara no está emitiendo ahora mismo.' })); };
+    const noSignal = () => img.replaceWith(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Esta cámara no está emitiendo ahora mismo.' }));
+    img.onerror = noSignal;
+    // El cartel «Servei no disponible» del SCT tiene un tamaño propio (720×534): se reconoce sin descargarlo aparte
+    img.onload = () => { if (x.url.includes('mct.gencat.cat') && img.naturalWidth === 720 && img.naturalHeight === 534) noSignal(); };
     clearInterval(camTimer);
     camTimer = setInterval(() => { const el = $('#camImg'); if (!el || sheetKind !== 'camera') { clearInterval(camTimer); return; } el.src = src(); }, 60000);
   }
