@@ -449,6 +449,7 @@ CAMARAS = os.path.join(DATA, "camaras.json")
 INC_FEEDS = [("dgt", "https://nap.dgt.es/datex2/v3/dgt/SituationPublication/datex2_v37.xml"),
              ("sct", "https://nap.dgt.es/datex2/sct/SituationPublication/all/content.xml")]
 CAM_FEED = "https://nap.dgt.es/datex2/v3/dgt/DevicePublication/camaras_datex2_v37.xml"
+CAM_SCT = "https://www.gencat.cat/transit/opendata/cameres.xml"   # Cataluña (la DGT no las incluye)
 XSI = "{http://www.w3.org/2001/XMLSchema-instance}type"
 
 # Tipo de incidencia → clave corta que entiende la app
@@ -539,7 +540,7 @@ def update_cameras():
         age = time.time() - datetime.fromisoformat(old.get("actualizado")).timestamp()
     except (TypeError, ValueError):
         age = 1e9
-    if age < 6 * 3600 and old.get("c"):
+    if age < 6 * 3600 and old.get("c") and any(str(r[0]).startswith("sct-") for r in old["c"]):
         print("Cámaras: al día")
         return
     import xml.etree.ElementTree as ET
@@ -567,10 +568,42 @@ def update_cameras():
         if lat is None or lon is None or not url:
             continue
         rows.append([dev.get("id"), round(lat, 5), round(lon, 5), road, km, url])
+    try:
+        sct = fetch_cameras_sct()
+        rows += sct
+        print(f"Cámaras SCT: {len(sct)}")
+    except Exception as e:
+        print(f"Cámaras SCT: {e}", file=sys.stderr)
+        rows += [r for r in old.get("c", []) if str(r[0]).startswith("sct-")]
     if len(rows) < 100:
         raise RuntimeError(f"Solo {len(rows)} cámaras: no se sobrescribe")
-    write_lines(CAMARAS, {"actualizado": now_iso(), "fuente": "DGT"}, "c", rows)
+    write_lines(CAMARAS, {"actualizado": now_iso(), "fuente": "DGT · Servei Català de Trànsit"}, "c", rows)
     print(f"Cámaras: {len(rows)}")
+
+
+def fetch_cameras_sct():
+    """Cámaras del Servei Català de Trànsit (formato WFS/GML)."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(get_text(CAM_SCT, 60))
+    rows = []
+    for fm in root.iter():
+        if local(fm.tag) != "featureMember":
+            continue
+        vals = {local(el.tag): (el.text or "").strip() for el in fm.iter() if (el.text or "").strip()}
+        try:
+            lon, lat = [float(x) for x in vals.get("coordinates", "").split(",")[:2]]
+        except ValueError:
+            continue
+        url = vals.get("link", "")
+        if not url or not (40.4 < lat < 42.95 and 0.1 < lon < 3.4):
+            continue
+        url = url.replace("http://", "https://", 1)
+        cam = url.split("sctidcam=")[-1].split(".")[0]
+        place = vals.get("municipi", "")
+        rows.append([f"sct-{cam}", round(lat, 5), round(lon, 5), vals.get("carretera", ""), vals.get("pk", ""), url, place])
+    if len(rows) < 20:
+        raise RuntimeError(f"solo {len(rows)} cámaras")
+    return rows
 
 
 def main():
