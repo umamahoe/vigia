@@ -504,3 +504,6 @@ a.btn-grad { text-decoration: none; color: var(--night); }
 
 .cam-img { width: 100%; border-radius: 16px; background: #000; aspect-ratio: 4 / 3; object-fit: cover; }
 button.refuel.bad { cursor: pointer; }
+
+.chip.on { background: rgba(0, 224, 198, .16); color: var(--teal); border-color: rgba(0, 224, 198, .45); }
+.chip-sep { flex: none; width: 1px; align-self: stretch; margin: 6px 2px; background: var(--line); }
