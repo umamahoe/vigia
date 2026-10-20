@@ -3106,7 +3106,7 @@
     obs: { label: 'Obstáculo en la vía', color: '#FF8A3D', icon: 'i-alert' },
     inc: { label: 'Incidencia', color: '#FFC83A', icon: 'i-alert' },
   };
-  st.incidents = []; st.cameras = []; st.trafficAt = null;
+  st.incidents = []; st.cameras = []; st.camOff = new Set(); st.trafficAt = null;
   async function loadTraffic(cams) {
     try {
       const r = await fetchTimeout('data/incidencias.json?v=' + Math.floor(now() / 300e3), 20000);
@@ -3117,20 +3117,31 @@
         drawTraffic(); refreshRouteIncidents();
       }
     } catch { /* aún no hay datos */ }
+    // Cámaras que ahora mismo solo dan el cartel de «imagen no disponible» (lo mira el servidor cada 20 min)
+    try {
+      const r = await fetchTimeout('data/camaras_apagadas.json?v=' + Math.floor(now() / 300e3), 20000);
+      if (r.ok) { const j = await r.json(); st.camOff = new Set((j.off || []).map(String)); if (!cams) drawTraffic(); }
+    } catch { /* aún no hay datos */ }
     if (!cams) return;
     try {
       const r = await fetchTimeout('data/camaras.json?v=' + Math.floor(now() / 3600e3), 20000);
-      if (r.ok) { const j = await r.json(); st.cameras = (j.c || []).map(x => ({ id: x[0], lat: x[1], lon: x[2], road: x[3], km: x[4], url: x[5], place: x[6] || '' })); drawTraffic(); }
+      if (r.ok) { const j = await r.json(); st.cameras = (j.c || []).map((x, i) => ({ key: 'c' + i, id: x[0], lat: x[1], lon: x[2], road: x[3], km: x[4], url: x[5], place: x[6] || '' })); drawTraffic(); }
     } catch { /* aún no hay datos */ }
   }
   function trafficImage(id) {
     const [, kind] = id.split(':');
-    const isCam = kind === 'cam', c = document.createElement('canvas'), px = 2, size = isCam ? 30 : 36;
+    const isCam = kind === 'cam' || kind === 'camoff', c = document.createElement('canvas'), px = 2, size = isCam ? 30 : 36;
     c.width = c.height = size * px;
     const ctx = c.getContext('2d'); ctx.scale(px, px);
-    if (isCam) {
+    if (kind === 'cam') {
       ctx.beginPath(); ctx.roundRect(3, 3, 24, 24, 7); ctx.fillStyle = '#1E2A44'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#8FB4FF'; ctx.stroke();
       ctx.fillStyle = '#8FB4FF'; ctx.beginPath(); ctx.roundRect(8, 11, 11, 8, 2); ctx.fill(); ctx.beginPath(); ctx.moveTo(19, 13.5); ctx.lineTo(23, 11); ctx.lineTo(23, 19); ctx.lineTo(19, 16.5); ctx.fill();
+      return ctx.getImageData(0, 0, c.width, c.height);
+    }
+    if (kind === 'camoff') {   // cámara apagada: gris y tachada
+      ctx.beginPath(); ctx.roundRect(3, 3, 24, 24, 7); ctx.fillStyle = '#2A3040'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#6B7488'; ctx.stroke();
+      ctx.fillStyle = '#6B7488'; ctx.beginPath(); ctx.roundRect(8, 11, 11, 8, 2); ctx.fill(); ctx.beginPath(); ctx.moveTo(19, 13.5); ctx.lineTo(23, 11); ctx.lineTo(23, 19); ctx.lineTo(19, 16.5); ctx.fill();
+      ctx.strokeStyle = '#FF6B76'; ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(8, 22); ctx.lineTo(22, 8); ctx.stroke();
       return ctx.getImageData(0, 0, c.width, c.height);
     }
     const k = INC[kind] || INC.inc;
@@ -3147,7 +3158,7 @@
     map.addSource('vg-cam', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     map.addSource('vg-inc', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     map.addLayer({ id: 'vg-cam', type: 'symbol', source: 'vg-cam', minzoom: 9,
-      layout: { 'icon-image': 'tf:cam', 'icon-allow-overlap': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 9, 0.6, 14, 0.9] } }, before);
+      layout: { 'icon-image': ['get', 'icon'], 'symbol-sort-key': ['get', 'sort'], 'icon-allow-overlap': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 9, 0.6, 14, 0.9] } }, before);
     map.addLayer({ id: 'vg-inc', type: 'symbol', source: 'vg-inc', minzoom: 6,
       layout: { 'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.55, 13, 0.95] } }, before);
     drawTraffic();
@@ -3157,7 +3168,7 @@
     const set = (id, feats) => { const s2 = map.getSource(id); if (s2) s2.setData({ type: 'FeatureCollection', features: feats }); };
     const showInc = isOn('md_inc'), showCam = isOn('md_cam');
     set('vg-inc', !showInc ? [] : st.incidents.map(x => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] }, properties: { id: x.id, icon: 'tf:' + x.kind } })));
-    set('vg-cam', !showCam ? [] : st.cameras.map(x => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] }, properties: { id: x.id } })));
+    set('vg-cam', !showCam ? [] : st.cameras.map(x => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] }, properties: { id: x.key, icon: st.camOff.has(String(x.id)) ? 'tf:camoff' : 'tf:cam', sort: st.camOff.has(String(x.id)) ? 0 : 1 } })));
   }
   map.on('click', 'vg-inc', e => { const f = e.features && e.features[0]; if (f) openIncident(f.properties.id); });
   map.on('click', 'vg-cam', e => { const f = e.features && e.features[0]; if (f) openCamera(f.properties.id); });
@@ -3176,14 +3187,24 @@
     $('#sheetBody').onclick = null; $('#sheetBody').onchange = null;
   }
   let camTimer = null;
+  function camSource(x) {
+    const u = x.url;
+    if (u.includes('mct.gencat.cat')) return 'Foto del Servei Català de Trànsit: la cambian cada 5 minutos';
+    if (u.includes('bcn.cat')) return 'Foto del Ajuntament de Barcelona';
+    if (u.includes('terrassa.cat')) return 'Foto del Ajuntament de Terrassa';
+    return 'Foto de la DGT: la cambian cada 3 minutos y suele tener unos 5 minutos de retraso';
+  }
   function openCamera(id) {
-    const x = st.cameras.find(c => String(c.id) === String(id)); if (!x) return;
+    const x = st.cameras.find(c => c.key === id || String(c.id) === String(id)); if (!x) return;   // cada cámara tiene su clave propia
     const src = () => x.url + (x.url.includes('?') ? '&' : '?') + 't=' + Math.floor(now() / 60000);
-    openSheet('camera', x.road ? `Cámara ${x.road}` : 'Cámara DGT', `
-      <img class="cam-img" id="camImg" src="${esc(src())}" alt="Imagen en directo de la cámara">
-      <p class="fine" style="margin:0">${x.place ? `${esc(x.place)} · ` : ''}${x.km ? `Km ${esc(x.km)} · ` : ''}${String(x.id).startsWith('sct-') ? 'Foto del Servei Català de Trànsit: la cambian cada 5 minutos' : 'Foto de la DGT: la cambian cada 3 minutos y suele tener unos 5 minutos de retraso'}. Vigía la recarga sola.</p>`);
+    const off = st.camOff.has(String(x.id));
+    openSheet('camera', x.road ? `Cámara ${x.road}` : (x.place ? `Cámara ${x.place}` : 'Cámara'), `
+      ${off ? `<div class="empty" style="margin:0">Esta cámara está apagada ahora mismo: su web solo enseña el cartel de «imagen no disponible». Vigía lo vuelve a mirar cada 20 minutos.</div>`
+        : `<img class="cam-img" id="camImg" src="${esc(src())}" alt="Imagen en directo de la cámara">`}
+      <p class="fine" style="margin:0">${x.place ? `${esc(x.place)} · ` : ''}${x.km ? `Km ${esc(x.km)} · ` : ''}${camSource(x)}.${off ? '' : ' Vigía la recarga sola.'}</p>`);
     $('#sheetBody').onclick = null; $('#sheetBody').onchange = null;
-    const img = $('#camImg'); img.onerror = () => { img.replaceWith(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Esta cámara no está emitiendo ahora mismo.' })); };
+    const img = $('#camImg'); clearInterval(camTimer); if (!img) return;
+    img.onerror = () => { img.replaceWith(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Esta cámara no está emitiendo ahora mismo.' })); };
     clearInterval(camTimer);
     camTimer = setInterval(() => { const el = $('#camImg'); if (!el || sheetKind !== 'camera') { clearInterval(camTimer); return; } el.src = src(); }, 60000);
   }
