@@ -3178,14 +3178,14 @@
   let camTimer = null;
   function openCamera(id) {
     const x = st.cameras.find(c => String(c.id) === String(id)); if (!x) return;
-    const src = () => x.url + (x.url.includes('?') ? '&' : '?') + 't=' + Math.floor(now() / 30000);
+    const src = () => x.url + (x.url.includes('?') ? '&' : '?') + 't=' + Math.floor(now() / 60000);
     openSheet('camera', x.road ? `Cámara ${x.road}` : 'Cámara DGT', `
       <img class="cam-img" id="camImg" src="${esc(src())}" alt="Imagen en directo de la cámara">
-      <p class="fine" style="margin:0">${x.km ? `Km ${esc(x.km)} · ` : ''}Imagen en directo de la DGT. Se actualiza sola cada 30 segundos.</p>`);
+      <p class="fine" style="margin:0">${x.km ? `Km ${esc(x.km)} · ` : ''}Foto de la DGT: la cambian cada 3 minutos y suele tener unos 5 minutos de retraso. Vigía la recarga sola.</p>`);
     $('#sheetBody').onclick = null; $('#sheetBody').onchange = null;
     const img = $('#camImg'); img.onerror = () => { img.replaceWith(Object.assign(document.createElement('div'), { className: 'empty', textContent: 'Esta cámara no está emitiendo ahora mismo.' })); };
     clearInterval(camTimer);
-    camTimer = setInterval(() => { const el = $('#camImg'); if (!el || sheetKind !== 'camera') { clearInterval(camTimer); return; } el.src = src(); }, 30000);
+    camTimer = setInterval(() => { const el = $('#camImg'); if (!el || sheetKind !== 'camera') { clearInterval(camTimer); return; } el.src = src(); }, 60000);
   }
   // Incidencias en la ruta
   function routeIncidents(route) {
