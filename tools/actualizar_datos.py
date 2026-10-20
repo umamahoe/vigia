@@ -256,7 +256,15 @@ def fetch_sct():
             continue
         if not (x > 100000 and y > 4000000):
             continue
+        # Algunas filas traen las coordenadas sin separador decimal (en cm o mm): se reajustan.
+        while x >= 1_000_000:
+            x /= 10
+        while y >= 10_000_000:
+            y /= 10
         lat, lon = utm_to_latlon(x, y)
+        if not (40.4 < lat < 42.95 and 0.1 < lon < 3.4):   # fuera de Cataluña: dato erróneo
+            print(f"SCT: coordenadas raras en {p[0]} km {p[1]}", file=sys.stderr)
+            continue
         v = int_prefix(p[-3])
         rows.append([round(lat, 6), round(lon, 6), "f", v if v and v <= 130 else None, None,
                      f"{p[0]} km {p[1].replace(',', '.')}", "sct"])
