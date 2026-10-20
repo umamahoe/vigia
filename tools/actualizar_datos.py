@@ -446,6 +446,7 @@ def update_radars(force=False):
 # Formato DATEX2: se lee sin depender de los prefijos de cada versión.
 INCIDENCIAS = os.path.join(DATA, "incidencias.json")
 CAMARAS = os.path.join(DATA, "camaras.json")
+CAMARAS_OFF = os.path.join(DATA, "camaras_apagadas.json")
 INC_FEEDS = [("dgt", "https://nap.dgt.es/datex2/v3/dgt/SituationPublication/datex2_v37.xml"),
              ("sct", "https://nap.dgt.es/datex2/sct/SituationPublication/all/content.xml")]
 CAM_FEED = "https://nap.dgt.es/datex2/v3/dgt/DevicePublication/camaras_datex2_v37.xml"
@@ -540,7 +541,8 @@ def update_cameras():
         age = time.time() - datetime.fromisoformat(old.get("actualizado")).timestamp()
     except (TypeError, ValueError):
         age = 1e9
-    if age < 6 * 3600 and old.get("c") and any(str(r[0]).startswith("sct-") for r in old["c"]):
+    old_ids = [str(r[0]) for r in old.get("c", [])]
+    if age < 6 * 3600 and old_ids and any(i.startswith("sct-") for i in old_ids) and len(set(old_ids)) == len(old_ids):
         print("Cámaras: al día")
         return
     import xml.etree.ElementTree as ET
@@ -581,11 +583,52 @@ def update_cameras():
     print(f"Cámaras: {len(rows)}")
 
 
+def check_cameras():
+    """Descarga la foto actual de cada cámara y marca las que no dan imagen de verdad.
+    Cuando una cámara se apaga, la DGT, el SCT y Barcelona sirven siempre la misma foto
+    ("Imagen no disponible", "Interrupció temporal"...). Si dos cámaras distintas dan
+    exactamente la misma foto, es ese cartel: se marcan como apagadas."""
+    import hashlib
+    from concurrent.futures import ThreadPoolExecutor
+    cams = [r for r in (load(CAMARAS) or {}).get("c", []) if len(r) > 5]
+    if not cams:
+        return
+    stop = time.time() + min(240, max(30, left() - 200))
+
+    def grab(r):
+        if time.time() > stop:
+            return r, None
+        try:
+            req = urllib.request.Request(r[5], headers={"User-Agent": "Vigia/1.0 (datos abiertos para app personal)"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read(400_000)
+                ctype = resp.headers.get("Content-Type", "")
+            if len(body) < 1500 or ("image" not in ctype and not body[:4] in (b"\xff\xd8\xff\xe0", b"\xff\xd8\xff\xe1", b"GIF8", b"\x89PNG")):
+                return r, "x"
+            return r, hashlib.sha1(body).hexdigest()
+        except Exception:
+            return r, "x"
+
+    with ThreadPoolExecutor(32) as ex:
+        got = list(ex.map(grab, cams))
+    urls_by_hash = {}
+    for r, h in got:
+        if h and h != "x":
+            urls_by_hash.setdefault(h, set()).add(r[5])
+    off = sorted({str(r[0]) for r, h in got if h == "x" or (h and len(urls_by_hash.get(h, ())) >= 2)})
+    checked = sum(1 for _, h in got if h)
+    if checked < len(cams) * 0.5:
+        print(f"Cámaras apagadas: solo se pudieron mirar {checked}, no se guarda")
+        return
+    write_lines(CAMARAS_OFF, {"actualizado": now_iso(), "miradas": checked}, "off", off)
+    print(f"Cámaras apagadas: {len(off)} de {checked} miradas")
+
+
 def fetch_cameras_sct():
     """Cámaras del Servei Català de Trànsit (formato WFS/GML)."""
     import xml.etree.ElementTree as ET
     root = ET.fromstring(get_text(CAM_SCT, 60))
-    rows = []
+    rows, seen, ids = [], set(), set()
     for fm in root.iter():
         if local(fm.tag) != "featureMember":
             continue
@@ -597,10 +640,25 @@ def fetch_cameras_sct():
         url = vals.get("link", "")
         if not url or not (40.4 < lat < 42.95 and 0.1 < lon < 3.4):
             continue
+        if "mobilitat.ad" in url:   # cámaras de Andorra: sus imágenes no cargan
+            continue
         url = url.replace("http://", "https://", 1)
-        cam = url.split("sctidcam=")[-1].split(".")[0]
+        if url in seen:              # la misma cámara repetida en el listado
+            continue
+        seen.add(url)
+        # Identificador único: el nombre de la imagen y quién la publica (SCT, Ajuntament de Barcelona, Terrassa…)
+        host = url.split("/")[2]
+        if "sctidcam=" in url:
+            cam = url.split("sctidcam=")[-1].split(".")[0]
+        else:
+            cam = ("bcn-" if "bcn.cat" in host else host.split(".")[-2] + "-") + url.split("?")[0].rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        cid = f"sct-{cam}"
+        n = 2
+        while cid in ids:
+            cid = f"sct-{cam}-{n}"; n += 1
+        ids.add(cid)
         place = vals.get("municipi", "")
-        rows.append([f"sct-{cam}", round(lat, 5), round(lon, 5), vals.get("carretera", ""), vals.get("pk", ""), url, place])
+        rows.append([cid, round(lat, 5), round(lon, 5), vals.get("carretera", ""), vals.get("pk", ""), url, place])
     if len(rows) < 20:
         raise RuntimeError(f"solo {len(rows)} cámaras")
     return rows
@@ -609,6 +667,7 @@ def fetch_cameras_sct():
 def main():
     errors = []
     for name, fn in (("incidencias", update_incidents), ("camaras", update_cameras),
+                     ("camaras_apagadas", check_cameras),
                      ("precios", update_prices), ("radares", lambda: update_radars("--radares" in sys.argv))):
         if left() < 60 and name != "incidencias":
             print(f"{name}: sin tiempo, la próxima vez", file=sys.stderr)
@@ -618,7 +677,7 @@ def main():
         except Exception as e:
             errors.append(f"{name}: {e}")
             print(f"ERROR {name}: {e}", file=sys.stderr)
-    if len(errors) == 4:
+    if len(errors) == 5:
         sys.exit(1)
 
 
