@@ -37,7 +37,7 @@
     voiceMode: 'all', silentOverride: true,
     voiceGuide: true, radarVoice: true, radarSound: true, maneuverSound: true,
     alertFar: true, alertNear: true, speeding: true,
-    layer: 'all', showGone: true, mapStyle: 'dark',
+    showGone: true, mapStyle: 'dark',
     tolls: 'avoid', criterion: 'eco', avoidMotorways: false,
     fuel: 'g95', consumption: 6.5,
     meStyle: 'arrow', meColor: '#00E0C6', meSize: 'm', autoTrips: true, md_inc: true, md_cam: false, showLimit: true,
@@ -46,6 +46,20 @@
   };
   const shown = kind => S['sh_' + kind] !== false;
   const S = Object.assign({}, DEFAULTS, store.get('settings', {}));
+  // Qué se ve en el mapa: cada cosa se enciende y apaga por separado (se pueden combinar).
+  if (S.layer && S.v_radars === undefined) {
+    S.v_radars = S.layer === 'all' || S.layer === 'radars';
+    S.v_gas = S.layer === 'all' || S.layer === 'gas';
+    if (S.layer === 'none' || S.layer === 'radars' || S.layer === 'gas') S.md_inc = false;
+    delete S.layer;
+  }
+  const VIEW = [
+    { k: 'v_radars', label: 'Radares', icon: 'i-camera', def: true },
+    { k: 'v_gas', label: 'Gasolineras', icon: 'i-fuel', def: true },
+    { k: 'md_inc', label: 'Tráfico', icon: 'i-alert', def: true },
+    { k: 'md_cam', label: 'Cámaras', icon: 'i-cctv', def: false },
+  ];
+  const isOn = k => { const v = VIEW.find(x => x.k === k); return S[k] === undefined ? v.def : !!S[k]; };
   const saveS = () => store.set('settings', S);
   if (!('voiceMode' in store.get('settings', {}))) {   // ajustes antiguos → modo de voz
     const old = store.get('settings', {});
@@ -289,12 +303,12 @@
   /** Cambia tipo de mapa o detalles. Devuelve true si el clic era de aquí. */
   function onMapPickerClick(t) {
     if (t.dataset.maptype) { S.mapStyle = t.dataset.maptype; }
-    else if (t.dataset.mapdetail) { const k = 'md_' + t.dataset.mapdetail; S[k] = S[k] === false ? true : !S[k]; }
+    else if (t.dataset.mapdetail) { const k = 'md_' + t.dataset.mapdetail; S[k] = (k === 'md_inc' || k === 'md_cam') ? !isOn(k) : !S[k]; }
     else return false;
     saveS();
     if (t.dataset.mapdetail === 'inc' || t.dataset.mapdetail === 'cam') {
-      document.querySelectorAll('[data-mapdetail]').forEach(b => b.setAttribute('aria-pressed', S['md_' + b.dataset.mapdetail] !== false && !!S['md_' + b.dataset.mapdetail]));
-      drawTraffic(); refreshRouteIncidents(); return true;
+      document.querySelectorAll('[data-mapdetail]').forEach(b => b.setAttribute('aria-pressed', ['inc', 'cam'].includes(b.dataset.mapdetail) ? isOn('md_' + b.dataset.mapdetail) : !!S['md_' + b.dataset.mapdetail]));
+      drawTraffic(); refreshRouteIncidents(); renderChips(); return true;
     }
     document.querySelectorAll('[data-maptype]').forEach(b => b.setAttribute('aria-pressed', b.dataset.maptype === S.mapStyle));
     document.querySelectorAll('[data-mapdetail]').forEach(b => b.setAttribute('aria-pressed', !!S['md_' + b.dataset.mapdetail]));
@@ -431,7 +445,7 @@
 
   function drawRadars() {
     if (!map.getSource('radars')) return;
-    const show = !!st.nav || S.layer === 'all' || S.layer === 'radars';
+    const show = !!st.nav || isOn('v_radars');
     let src = allRadars();
     if (st.nav) {
       const prog = st.nav.progress;
@@ -577,7 +591,7 @@
 
   function drawStations() {
     if (!map.getSource('stations')) return;
-    const show = (S.layer === 'all' || S.layer === 'gas') && shown('gas') && !st.nav && map.getZoom() >= 7.5;
+    const show = isOn('v_gas') && shown('gas') && !st.nav && map.getZoom() >= 7.5;
     if (!show || !st.stations.length) {
       if (drawStations.sig !== '') { drawStations.sig = ''; setSource('stations', EMPTY); }
       return;
@@ -1388,28 +1402,32 @@
   }
 
   // ---------- Interfaz: HUD ----------
-  const LAYERS = [
-    { k: 'all', label: 'Todo', icon: 'i-layers' },
-    { k: 'radars', label: 'Radares', icon: 'i-camera' },
-    { k: 'gas', label: 'Gasolineras', icon: 'i-fuel' },
-    { k: 'none', label: 'Solo mapa', icon: 'i-map' },
-  ];
   const TYPES = ['fixed', 'section', 'mobile', 'light', 'police', 'gas'];
+  // Lee algo que se define más abajo en el archivo; al arrancar aún no existe.
+  const later = fn => { try { return fn(); } catch { return null; } };
   function renderChips() {
     const hidden = TYPES.filter(k => !shown(k)).length;
     $('#chips').innerHTML =
       `<button class="chip chip-filter" type="button" data-open="layers">${ic('i-sliders')}Filtrar${hidden ? `<span class="count">${hidden}</span>` : ''}</button>` +
-      LAYERS.map(l =>
-        `<button class="chip" role="tab" type="button" data-layer="${l.k}" aria-selected="${S.layer === l.k}">${ic(l.icon)}${l.label}</button>`).join('') +
-      `<button class="chip" type="button" data-open="group">${ic('i-me')}Juntos</button>`;
+      VIEW.map(v => `<button class="chip chip-toggle${isOn(v.k) ? ' on' : ''}" type="button" data-view="${v.k}" aria-pressed="${isOn(v.k)}">${ic(v.icon)}${v.label}</button>`).join('') +
+      `<span class="chip-sep"></span>` +
+      `<button class="chip" type="button" data-open="group">${ic('i-me')}Juntos${later(() => Group.code) ? '<span class="count">●</span>' : ''}</button>` +
+      (later(() => car.parking) ? `<button class="chip" type="button" data-open="parking">${ic('i-pin')}Mi coche</button>` : '') +
+      `<button class="chip" type="button" data-open="trips">${ic('i-car')}Viajes</button>`;
   }
   $('#chips').addEventListener('click', e => {
     if (e.target.closest('[data-open="layers"]')) { openLayers(); return; }
     if (e.target.closest('[data-open="group"]')) { openGroup(); return; }
-    const b = e.target.closest('[data-layer]');
+    if (e.target.closest('[data-open="parking"]')) { openParking(); return; }
+    if (e.target.closest('[data-open="trips"]')) { car.tab = 'trips'; openCar(); return; }
+    const b = e.target.closest('[data-view]');
     if (!b) return;
-    S.layer = b.dataset.layer; saveS();
-    renderChips(); drawRadars(); drawStations();
+    const k = b.dataset.view, on = !isOn(k);
+    S[k] = on; saveS();
+    renderChips(); drawRadars(); drawStations(); drawTraffic(); refreshRouteIncidents();
+    const label = VIEW.find(v => v.k === k).label;
+    if (k === 'md_cam' && on) toast(map.getZoom() < 9 ? 'Cámaras: acércate a una autovía para verlas' : 'Cámaras: toca una para verla en directo');
+    else toast(`${label}: ${on ? 'visible' : 'oculto'}`);
   });
 
   function renderSearchBar() {
@@ -1937,7 +1955,7 @@
     S[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     saveS();
     if (k.startsWith('sh_')) applyVisibility();
-    if (k === 'layer') { renderChips(); drawRadars(); drawStations(); }
+    if (VIEW.some(v => v.k === k)) { renderChips(); drawRadars(); drawStations(); drawTraffic(); refreshRouteIncidents(); }
     if (k === 'showGone') drawRadars();
     if (k === 'fuel') { car.profile.fuel = S.fuel; saveCar(); drawStations(); renderCheap(); }
     if (k === 'silentOverride') applyAudioSession();
@@ -1987,7 +2005,7 @@
       <div class="group">${typeRows()}</div>
       <div class="section-label">Mapa</div>
       <div class="group">
-        ${sel('layer', 'Mostrar', [['all', 'Todo'], ['radars', 'Solo radares'], ['gas', 'Solo gasolineras'], ['none', 'Solo mapa']])}
+        ${VIEW.map(v => `<label class="opt"><span class="lbl">Ver ${v.label.toLowerCase()}</span><span class="switch"><input type="checkbox" data-set="${v.k}" ${isOn(v.k) ? 'checked' : ''}><span></span></span></label>`).join('')}
         ${sw('showGone', 'Ver radares retirados', 'En gris, los que ya no están')}
       </div>
       <div class="map-pick">${mapPickerHtml()}</div>
@@ -2624,6 +2642,7 @@
     const p = car.parking;
     if (p && !st.nav) { parkMarker.setLngLat([p.lon, p.lat]); if (!parkShown) { parkMarker.addTo(map); parkShown = true; } }
     else if (parkShown) { parkMarker.remove(); parkShown = false; }
+    renderChips();
   }
   const walkUrl = p => `https://maps.apple.com/?daddr=${p.lat},${p.lon}&dirflg=w`;
   function openParking() {
@@ -2850,7 +2869,7 @@
       if (this.code && !quiet) this.send({ t: 'bye' });
       this.markers.forEach(mk => mk.remove()); this.markers.clear(); this.members.clear();
       if (!quiet) { this.code = null; store.set('group', null); }
-      renderGroupPill();
+      renderGroupPill(); renderChips();
     },
     async send(p) {
       if (!this.code) return;
@@ -2907,7 +2926,7 @@
       el.addEventListener('click', openGroup);
       document.querySelector('.hud-top').appendChild(el);
     }
-    el.hidden = false;
+    el.hidden = false; renderChips();
     const n = Group.members.size;
     el.innerHTML = `${ic('i-me')}<span>${n ? `${n + 1} en el grupo` : 'Grupo: esperando a los demás'}</span>`;
   }
@@ -3136,8 +3155,9 @@
   map.on('style.load', addTrafficLayers);
   function drawTraffic() {
     const set = (id, feats) => { const s2 = map.getSource(id); if (s2) s2.setData({ type: 'FeatureCollection', features: feats }); };
-    set('vg-inc', S.md_inc === false ? [] : st.incidents.map(x => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] }, properties: { id: x.id, icon: 'tf:' + x.kind } })));
-    set('vg-cam', !S.md_cam ? [] : st.cameras.map(x => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] }, properties: { id: x.id } })));
+    const showInc = isOn('md_inc'), showCam = isOn('md_cam');
+    set('vg-inc', !showInc ? [] : st.incidents.map(x => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] }, properties: { id: x.id, icon: 'tf:' + x.kind } })));
+    set('vg-cam', !showCam ? [] : st.cameras.map(x => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [x.lon, x.lat] }, properties: { id: x.id } })));
   }
   map.on('click', 'vg-inc', e => { const f = e.features && e.features[0]; if (f) openIncident(f.properties.id); });
   map.on('click', 'vg-cam', e => { const f = e.features && e.features[0]; if (f) openCamera(f.properties.id); });
